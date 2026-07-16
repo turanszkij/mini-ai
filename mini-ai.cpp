@@ -28,6 +28,8 @@
 
 #include "stable-diffusion.h"
 
+#include "resource.h"
+
 #define LINK_DLL_FUNCTION(name, dll) using PFN_##name = decltype(&name); PFN_##name name = (PFN_##name)GetProcAddress(dll, #name)
 
 // Unique IDs for our buttons
@@ -94,11 +96,11 @@ void set_title()
 	wchar_t text[1024] = {};
 	if (current_download.empty())
 	{
-		_snwprintf(text, sizeof(text), L"mini-ai %d*%dpx (%d%%)", w2, h2, progress);
+		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%)", w2, h2, progress);
 	}
 	else
 	{
-		_snwprintf(text, sizeof(text), L"mini-ai %d*%dpx (%d%%) | Downloading: %s", w2, h2, progress, current_download.c_str());
+		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%) | Downloading: %s", w2, h2, progress, current_download.c_str());
 	}
 	SetWindowText(window, text);
 }
@@ -775,12 +777,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	wcex.cbClsExtra = 0;
 	wcex.cbWndExtra = 0;
 	wcex.hInstance = hInstance;
-	wcex.hIcon = NULL;
 	wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wcex.hbrBackground = CreateSolidBrush(RGB(30, 30, 30));
 	wcex.lpszMenuName = NULL;
 	wcex.lpszClassName = L"mini-ai";
-	wcex.hIconSm = NULL;
+	wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
+	wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON)); // Small icon (taskbar)
 	RegisterClassExW(&wcex);
 
 	RECT wr = { 0, 0, w, h + text_height + button_height };
