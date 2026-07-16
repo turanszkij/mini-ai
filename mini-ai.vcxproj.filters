@@ -5,5 +5,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stable-diffusion\stable-diffusion.h" />
+    <ClInclude Include="stb_image.h" />
+    <ClInclude Include="stb_image_resize2.h" />
+    <ClInclude Include="stb_image_write.h" />
   </ItemGroup>
 </Project>
