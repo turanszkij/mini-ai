@@ -125,6 +125,8 @@ void sd_callback(int step, int steps, float time, void* data)
 {
 	progress = int(float(step) / float(steps) * 100);
 	set_title();
+	InvalidateRect(window, NULL, FALSE);
+	UpdateWindow(window); // Force immediate refresh
 }
 
 void sd_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data)
@@ -465,6 +467,40 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 					DeleteObject(hBrush1);
 					DeleteObject(hBrush2);
+				}
+
+				if (progress > 0 && progress < 100)
+				{
+					// Prepare the text
+					wchar_t status[32];
+					wsprintfW(status, L"%d%%", progress);
+
+					// Setup DC for text
+					SetBkMode(hdc, TRANSPARENT);
+
+					// Create a larger, bold font for the progress text
+					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+						CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+						DEFAULT_PITCH, L"Segoe UI");
+					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+
+					// Calculate center of the image area
+					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+
+					// 1. Draw the Shadow (Offset by 2 pixels down/right)
+					RECT shadowRect = textRect;
+					OffsetRect(&shadowRect, 2, 2);
+					SetTextColor(hdc, RGB(0, 0, 0)); // Black shadow
+					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+					// 2. Draw the Main Text (White)
+					SetTextColor(hdc, RGB(255, 255, 255)); // Bright white
+					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+					// Cleanup
+					SelectObject(hdc, hOldFont);
+					DeleteObject(hProgressFont);
 				}
 
 				HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
