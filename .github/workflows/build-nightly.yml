@@ -23,8 +23,8 @@ jobs:
     - name: Move files
       shell: cmd
       run: |
-        move mini-ai/x64/Release/mini-ai.exe .
-        move mini-ai/lib/*.dll .
+        move x64\Release\mini-ai.exe .\
+        move lib\*.dll .\
 
     - name: Package
       uses: actions/upload-artifact@v4
