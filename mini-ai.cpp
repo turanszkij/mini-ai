@@ -92,7 +92,6 @@ LRESULT CALLBACK EditSubclassProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM
 				char text[4096] = {};
 				stbi_convert_wchar_to_utf8(text, sizeof(text), wtext);
 
-				//SetDllDirectory(L"stable-diffusion/cpu/");
 				HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
 				assert(stable_diffusion);
 				LINK_DLL_FUNCTION(sd_ctx_params_init, stable_diffusion);
