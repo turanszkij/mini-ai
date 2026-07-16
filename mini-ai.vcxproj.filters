@@ -3,4 +3,7 @@
   <ItemGroup>
     <ClCompile Include="mini-ai.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="stable-diffusion\stable-diffusion.h" />
+  </ItemGroup>
 </Project>

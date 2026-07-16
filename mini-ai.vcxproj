@@ -135,6 +135,9 @@
   <ItemGroup>
     <ClCompile Include="mini-ai.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="stable-diffusion\stable-diffusion.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
