@@ -364,6 +364,6 @@ FodyWeavers.xsd
 
 *.exe
 *.zip
-*.dll
 *.safetensors
 *.gguf
+*.txt

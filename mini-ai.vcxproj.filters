@@ -9,4 +9,62 @@
     <ClInclude Include="stb_image_resize2.h" />
     <ClInclude Include="stb_image_write.h" />
   </ItemGroup>
+  <ItemGroup>
+    <Filter Include="lib">
+      <UniqueIdentifier>{6626fd1d-63b9-488f-97f3-7f55cfca8917}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <CopyFileToFolders Include="lib\ggml.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-base.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-alderlake.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-cannonlake.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-cascadelake.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-haswell.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-icelake.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-sandybridge.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-skylakex.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-sse42.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-cpu-x64.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\ggml-vulkan.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\libsharpyuv.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\libwebp.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\libwebpmux.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\stable-diffusion.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+    <CopyFileToFolders Include="lib\webm.dll">
+      <Filter>lib</Filter>
+    </CopyFileToFolders>
+  </ItemGroup>
 </Project>

@@ -12,6 +12,9 @@
 
 #include <thread>
 #include <string>
+#include <fstream>
+#include <atomic>
+#include <filesystem>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_WINDOWS_UTF8
@@ -48,6 +51,8 @@ static const int button_height = 45; // Height of the bottom row
 static bool is_dragging = false; // Tracks if we are currently resizing the textbox
 const int splitter_thickness = 6; // Hit-test thickness for dragging
 static int progress = 0;
+static std::atomic_bool is_generating{ false };
+static std::wstring current_download;
 static HWND window = nullptr;
 static HWND hEdit = nullptr;
 static HWND hBtnLoad = nullptr;
@@ -58,11 +63,64 @@ static HWND hBtnGenerate = nullptr;
 struct Res { int w, h; const wchar_t* name; };
 Res presets[] = { {512, 512, L"512x512"}, {768, 512, L"768x512"}, {512, 768, L"512x768"}, {1280, 720, L"1280x720"}, {960, 1280, L"960x1280"} };
 
+
+void SavePrompt(HWND hEdit) {
+	int length = GetWindowTextLengthW(hEdit);
+	std::wstring buffer(length, L'\0');
+	GetWindowTextW(hEdit, &buffer[0], length + 1);
+	std::wofstream file("prompt.txt");
+	if (file.is_open()) 
+	{
+		file << buffer;
+		file.close();
+	}
+}
+void LoadPrompt(HWND hEdit) {
+	std::wifstream file("prompt.txt");
+	if (file.is_open()) {
+		std::wstring line;
+		std::getline(file, line);
+		SetWindowTextW(hEdit, line.c_str());
+		file.close();
+	}
+	else {
+		// default if file doesn't exist
+		SetWindowTextW(hEdit, L"A beautiful mountain landscape...");
+	}
+}
+
 void set_title()
 {
-	char text[1024] = {};
-	snprintf(text, sizeof(text), "mini-ai %d*%dpx (%d%%)", w2, h2, progress);
-	SetWindowTextA(window, text);
+	wchar_t text[1024] = {};
+	if (current_download.empty())
+	{
+		_snwprintf(text, sizeof(text), L"mini-ai %d*%dpx (%d%%)", w2, h2, progress);
+	}
+	else
+	{
+		_snwprintf(text, sizeof(text), L"mini-ai %d*%dpx (%d%%) | Downloading: %s", w2, h2, progress, current_download.c_str());
+	}
+	SetWindowText(window, text);
+}
+
+
+void EnsureModelExists(const wchar_t* url, const wchar_t* fileName)
+{
+	if (std::filesystem::exists(fileName))
+		return;
+
+	current_download = fileName;
+	set_title();
+	
+	std::wstring cmd = L"curl -L \"" + std::wstring(url) + L"\" -o \"" + std::wstring(fileName) + L"\" -C -";
+	int result = _wsystem(cmd.c_str());
+	if (result != 0) 
+	{
+		MessageBox(window, cmd.c_str(), L"Download error!", 0);
+	}
+
+	current_download.clear();
+	set_title();
 }
 
 void AddToolTip(HWND hwndParent, HWND hwndTarget, const wchar_t* text)
@@ -158,11 +216,17 @@ void sd_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, vo
 
 void trigger_generation()
 {
+	if (is_generating.load())
+		return;
 	std::thread([] {
-		wchar_t wtext[1024] = {};
-		GetWindowText(hEdit, wtext, ARRAYSIZE(wtext));
-		char text[4096] = {};
-		stbi_convert_wchar_to_utf8(text, sizeof(text), wtext);
+		int length = GetWindowTextLengthW(hEdit);
+		std::wstring buffer(length, L'\0');
+		GetWindowTextW(hEdit, &buffer[0], length + 1);
+		int utf8len = stbi_convert_wchar_to_utf8(nullptr, 0, buffer.c_str());
+		std::string text(utf8len, '\0');
+		stbi_convert_wchar_to_utf8(text.data(), text.length(), buffer.c_str());
+
+		SavePrompt(hEdit);
 
 		HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
 		assert(stable_diffusion);
@@ -176,9 +240,14 @@ void trigger_generation()
 		LINK_DLL_FUNCTION(sd_set_progress_callback, stable_diffusion);
 		LINK_DLL_FUNCTION(sd_set_preview_callback, stable_diffusion);
 
+		CreateDirectory(L"models", 0);
+		EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", L"models/ae.safetensors");
+		EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", L"models/z_image_turbo-Q4_K.gguf");
+		EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", L"models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+
 		sd_ctx_params_t sd_params;
 		sd_ctx_params_init(&sd_params);
-		sd_params.diffusion_model_path = "models/z_image_turbo-Q4_K_M.gguf";
+		sd_params.diffusion_model_path = "models/z_image_turbo-Q4_K.gguf";
 		sd_params.vae_path = "models/ae.safetensors";
 		sd_params.llm_path = "models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
 		sd_params.wtype = SD_TYPE_COUNT;
@@ -194,9 +263,10 @@ void trigger_generation()
 		if (sd_ctx != nullptr)
 		{
 			sd_img_gen_params_t img_params;
+			sd_img_gen_params_init(&img_params);
 			img_params.width = w2;
 			img_params.height = h2;
-			img_params.prompt = text;
+			img_params.prompt = text.c_str();
 			img_params.strength = 0.0f;
 			img_params.batch_count = 1;
 
@@ -212,6 +282,7 @@ void trigger_generation()
 
 			sd_image_t* image = nullptr;
 			int num_images = 1;
+			is_generating.store(true);
 			if (generate_image(sd_ctx, &img_params, &image, &num_images))
 			{
 				w = image->width;
@@ -238,13 +309,14 @@ void trigger_generation()
 			free_sd_ctx(sd_ctx);
 		}
 		FreeLibrary(stable_diffusion);
-		}).detach();
+		is_generating.store(false);
+	}).detach();
 }
 
 void handle_load_image(HWND hWnd)
 {
-	wchar_t szFile[MAX_PATH] = { 0 };
-	OPENFILENAMEW ofn = { 0 };
+	wchar_t szFile[MAX_PATH] = {};
+	OPENFILENAMEW ofn = {};
 	ofn.lStructSize = sizeof(ofn);
 	ofn.hwndOwner = hWnd;
 	ofn.lpstrFile = szFile;
@@ -289,8 +361,8 @@ void handle_save_image(HWND hWnd)
 		return;
 	}
 
-	wchar_t szFile[MAX_PATH] = { 0 };
-	OPENFILENAMEW ofn = { 0 };
+	wchar_t szFile[MAX_PATH] = {};
+	OPENFILENAMEW ofn = {};
 	ofn.lStructSize = sizeof(ofn);
 	ofn.hwndOwner = hWnd;
 	ofn.lpstrFile = szFile;
@@ -298,7 +370,7 @@ void handle_save_image(HWND hWnd)
 	ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0";
 	ofn.nFilterIndex = 1;
 	ofn.lpstrDefExt = L"png";
-	ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
 
 	if (GetSaveFileNameW(&ofn))
 	{
@@ -471,34 +543,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 				if (progress > 0 && progress < 100)
 				{
-					// Prepare the text
-					wchar_t status[32];
+					// Print progress text to image area:
+					wchar_t status[32] = {};
 					wsprintfW(status, L"%d%%", progress);
-
-					// Setup DC for text
 					SetBkMode(hdc, TRANSPARENT);
-
-					// Create a larger, bold font for the progress text
-					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-						CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-						DEFAULT_PITCH, L"Segoe UI");
+					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-
-					// Calculate center of the image area
 					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
-
-					// 1. Draw the Shadow (Offset by 2 pixels down/right)
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
-					SetTextColor(hdc, RGB(0, 0, 0)); // Black shadow
+					SetTextColor(hdc, RGB(10, 10, 10));
 					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-					// 2. Draw the Main Text (White)
-					SetTextColor(hdc, RGB(255, 255, 255)); // Bright white
+					SetTextColor(hdc, RGB(255, 255, 255));
 					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-					// Cleanup
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
@@ -782,18 +839,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	SetWindowTheme(hBtnGenerate, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hEdit, L"DarkMode_Explorer", NULL);
 
+	LoadPrompt(hEdit);
+
 	// keyboard shortcuts
 	ACCEL accels[] = {
 		{ FCONTROL | FVIRTKEY, 'O', ID_ACCEL_LOAD },     // Ctrl + O
 		{ FCONTROL | FVIRTKEY, 'S', ID_ACCEL_SAVE },     // Ctrl + S
 		{ FCONTROL | FVIRTKEY, 'C', ID_ACCEL_COPY },     // Ctrl + C
-		{ FCONTROL | FVIRTKEY, VK_RETURN, ID_ACCEL_GENERATE } // Ctrl + Enter (intuitive for generating!)
+		{ FCONTROL | FVIRTKEY, VK_RETURN, ID_ACCEL_GENERATE } // Ctrl + Enter
 	};
 	HACCEL hAccel = CreateAcceleratorTableW(accels, ARRAYSIZE(accels));
 
 	while (!exiting)
 	{
-		MSG msg = { 0 };
+		MSG msg = {};
 		if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
 			if (!TranslateAcceleratorW(window, hAccel, &msg))
 			{
