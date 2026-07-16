@@ -23,7 +23,7 @@
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb_image_resize2.h"
 
-#include "stable-diffusion/stable-diffusion.h"
+#include "stable-diffusion.h"
 
 #define LINK_DLL_FUNCTION(name, dll) using PFN_##name = decltype(&name); PFN_##name name = (PFN_##name)GetProcAddress(dll, #name)
 
@@ -176,9 +176,9 @@ void trigger_generation()
 
 		sd_ctx_params_t sd_params;
 		sd_ctx_params_init(&sd_params);
-		sd_params.diffusion_model_path = "stable-diffusion/models/z_image_turbo-Q4_K.gguf";
-		sd_params.vae_path = "stable-diffusion/models/ae.safetensors";
-		sd_params.llm_path = "stable-diffusion/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+		sd_params.diffusion_model_path = "models/z_image_turbo-Q4_K_M.gguf";
+		sd_params.vae_path = "models/ae.safetensors";
+		sd_params.llm_path = "models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
 		sd_params.wtype = SD_TYPE_COUNT;
 		sd_params.n_threads = -1;
 		sd_params.rng_type = STD_DEFAULT_RNG;
@@ -444,10 +444,27 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else
 				{
-					HBRUSH hBgBrush = CreateSolidBrush(RGB(30, 30, 30));
-					RECT img_rect = { 0, 0, w2, draw_height };
-					FillRect(hdc, &img_rect, hBgBrush);
-					DeleteObject(hBgBrush);
+					// Checkerboard
+					int cellSize = 20;
+					COLORREF color1 = RGB(35, 35, 35);
+					COLORREF color2 = RGB(25, 25, 25);
+
+					HBRUSH hBrush1 = CreateSolidBrush(color1);
+					HBRUSH hBrush2 = CreateSolidBrush(color2);
+
+					for (int y = 0; y < draw_height; y += cellSize) {
+						for (int x = 0; x < w2; x += cellSize) {
+							RECT cell = { x, y, x + cellSize, y + cellSize };
+							// Alternate colors based on cell position
+							if (((x / cellSize) + (y / cellSize)) % 2 == 0)
+								FillRect(hdc, &cell, hBrush1);
+							else
+								FillRect(hdc, &cell, hBrush2);
+						}
+					}
+
+					DeleteObject(hBrush1);
+					DeleteObject(hBrush2);
 				}
 
 				HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
