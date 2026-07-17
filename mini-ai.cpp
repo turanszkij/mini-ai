@@ -10,6 +10,9 @@
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
 
+#include <wininet.h>
+#pragma comment(lib, "wininet.lib")
+
 #include <thread>
 #include <string>
 #include <fstream>
@@ -111,23 +114,74 @@ void set_title()
 	SetWindowText(window, text);
 }
 
-
 void EnsureModelExists(const wchar_t* url, const wchar_t* fileName)
 {
 	if (std::filesystem::exists(fileName))
 		return;
 
+	std::wstring tempFileName = std::wstring(fileName) + L".tmp";
+
 	current_download = fileName;
+
+	size_t found;
+	found = current_download.find_last_of(L"/\\");
+	current_download = current_download.substr(found + 1);
+
 	InvalidateRect(window, NULL, TRUE);
-	
-	std::wstring cmd = L"curl -L \"" + std::wstring(url) + L"\" -o \"" + std::wstring(fileName) + L"\" -C -";
-	int result = _wsystem(cmd.c_str());
-	if (result != 0) 
+
+	HINTERNET hInternet = InternetOpen(L"MiniAI", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+	HINTERNET hUrl = InternetOpenUrl(hInternet, url, NULL, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE, 0);
+
+	bool success = false;
+	if (hUrl)
 	{
-		MessageBox(window, cmd.c_str(), L"Download error!", 0);
+		DWORD dwSize = 0;
+		DWORD dwHeaderSize = sizeof(dwSize);
+		HttpQueryInfo(hUrl, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &dwSize, &dwHeaderSize, NULL);
+
+		std::ofstream outFile(tempFileName, std::ios::binary);
+		std::vector<char> buffer(1024 * 1024);
+		DWORD bytesRead = 0;
+		DWORD totalRead = 0;
+		int last_progress = -1;
+
+		while (InternetReadFile(hUrl, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
+		{
+			outFile.write(buffer.data(), bytesRead);
+			totalRead += bytesRead;
+
+			if (dwSize > 0)
+			{
+				int current_progress = (int)((double)totalRead / (double)dwSize * 100);
+				if (current_progress != last_progress)
+				{
+					progress = current_progress;
+					last_progress = current_progress;
+					InvalidateRect(window, NULL, FALSE);
+				}
+			}
+		}
+		outFile.close();
+		InternetCloseHandle(hUrl);
+
+		success = (bytesRead == 0);
+	}
+	else
+	{
+		MessageBox(window, L"Could not connect to URL", L"Download Error", MB_OK | MB_ICONERROR);
+	}
+
+	InternetCloseHandle(hInternet);
+
+	if (success) {
+		std::filesystem::rename(tempFileName, fileName);
+	}
+	else {
+		std::filesystem::remove(tempFileName); // clean up partial file
 	}
 
 	current_download.clear();
+	progress = 0;
 	InvalidateRect(window, NULL, TRUE);
 }
 
@@ -618,7 +672,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					// Print download progress text to image area:
 					wchar_t status[4096] = {};
-					wsprintfW(status, L"Downloading model:\n%s", current_download.c_str());
+					wsprintfW(status, L"Downloading model: %d%%\n%s", progress, current_download.c_str());
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hProgressFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
