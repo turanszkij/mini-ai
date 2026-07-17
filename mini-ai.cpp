@@ -363,6 +363,8 @@ void trigger_generation()
 			img_params.strength = 0.0f;
 			img_params.batch_count = 1;
 
+			img_params.vae_tiling_params.enabled = true;
+
 			sd_sample_params_init(&img_params.sample_params);
 			img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
 			img_params.sample_params.sample_steps = 8;
