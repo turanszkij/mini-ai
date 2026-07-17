@@ -73,7 +73,7 @@ static float image_to_image_txt_cfg = 2.0f;
 static int image_to_image_steps = 20;
 
 struct Res { int w, h; const wchar_t* name; };
-Res presets[] = { {512, 512, L"512x512"}, {800, 600, L"1024x1024"}, {768, 512, L"768x512"}, {512, 768, L"512x768"}, {1280, 720, L"1280x720"}, {960, 1280, L"960x1280"}, {1024, 1024, L"1024x1024"} };
+Res presets[] = { {512, 512, L"512x512"}, {1024, 1024, L"1024x1024"}, {640, 480, L"640x480"}, {800, 600, L"800x600"}, {1280, 720, L"1280x720"}, {1920, 1080, L"1920x1080"}, {480, 640, L"480x640"}, {960, 1280, L"960x1280"} };
 
 
 void SavePrompt(HWND hEdit) {
@@ -613,7 +613,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					MoveWindow(hEdit, 0, rc.bottom - button_height - text_height, rc.right, text_height, TRUE);
 				}
 
-				// Position Buttons: Load (Square), Save (Square), Copy (Square), Generate (Fills remaining space)
 				int square_width = button_height;
 				if (hBtnLoad)    MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
 				if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
@@ -950,10 +949,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						}
 
 						int square_width = button_height;
-						if (hBtnLoad)      MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnSave)      MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnCopy)      MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnGenerate)  MoveWindow(hBtnGenerate, square_width * 3, rc.bottom - button_height, rc.right - (square_width * 3), button_height, TRUE);
+						if (hBtnLoad)    MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
+						if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
+						if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
+						if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
+						if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 4, rc.bottom - button_height, rc.right - (square_width * 4), button_height, TRUE);
 
 						InvalidateRect(hWnd, NULL, TRUE);
 					}
