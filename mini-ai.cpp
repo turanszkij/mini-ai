@@ -305,6 +305,23 @@ void trigger_generation()
 			img_params.sample_params.guidance.img_cfg = 1.0f;
 			img_params.sample_params.guidance.distilled_guidance = 3.5f;
 
+			sd_image_t init_img = {};
+			if (rgba != nullptr)
+			{
+				init_img.width = w;
+				init_img.height = h;
+				init_img.channel = 3;
+				init_img.data = (uint8_t*)malloc(w * h * 3);
+				for (int i = 0; i < w * h; ++i)
+				{
+					init_img.data[i * 3 + 0] = rgba[i * 4 + 0];
+					init_img.data[i * 3 + 1] = rgba[i * 4 + 1];
+					init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
+				}
+				img_params.init_image = init_img;
+				img_params.strength = 0.25f;
+			}
+
 			sd_image_t* image = nullptr;
 			int num_images = 1;
 			is_generating.store(true);
@@ -332,6 +349,7 @@ void trigger_generation()
 				redraw();
 			}
 			free_sd_ctx(sd_ctx);
+			if (init_img.data) free(init_img.data);
 		}
 		FreeLibrary(stable_diffusion);
 
