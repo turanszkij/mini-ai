@@ -263,7 +263,9 @@ void trigger_generation()
 		stbi_convert_wchar_to_utf8(u8_text_encoder_path, MAX_PATH, text_encoder_path);
 		stbi_convert_wchar_to_utf8(u8_diffusion_model_path, MAX_PATH, diffusion_model_path);
 
-		CreateDirectory(L"models", 0);
+		wchar_t models_path[MAX_PATH] = {};
+		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
+		CreateDirectory(models_path, 0);
 		EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
 		EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
 		EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
