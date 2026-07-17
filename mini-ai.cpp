@@ -59,6 +59,7 @@ const int splitter_thickness = 6; // Hit-test thickness for dragging
 static int progress = 0;
 static std::atomic_bool is_generating{ false };
 static std::wstring current_download;
+static std::string current_errors;
 static HWND window = nullptr;
 static HWND hEdit = nullptr;
 static HWND hBtnLoad = nullptr;
@@ -238,6 +239,11 @@ void sd_log(enum sd_log_level_t level, const char* text, void* data)
 {
 	if (level == SD_LOG_DEBUG)
 		return;
+	if (level == SD_LOG_ERROR)
+	{
+		current_errors += text;
+		InvalidateRect(window, NULL, TRUE);
+	}
 	OutputDebugStringA(text);
 }
 
@@ -280,6 +286,8 @@ void trigger_generation()
 {
 	if (is_generating.load())
 		return;
+	current_errors.clear();
+
 	std::thread([] {
 		int length = GetWindowTextLengthW(hEdit);
 		std::wstring buffer(length, L'\0');
@@ -708,6 +716,33 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 					SetTextColor(hdc, RGB(255, 255, 255));
 					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					SelectObject(hdc, hOldFont);
+					DeleteObject(hProgressFont);
+				}
+				else if (!current_errors.empty())
+				{
+					int cnt = MultiByteToWideChar(CP_UTF8, 0, current_errors.c_str(), -1, nullptr, 0);
+					std::wstring wstr(cnt, 0);
+					MultiByteToWideChar(CP_UTF8, 0, current_errors.c_str(), -1, wstr.data(), cnt);
+					wchar_t status[4096] = {};
+					wsprintfW(status, L"Errors:\n%s", wstr.c_str());
+					SetBkMode(hdc, TRANSPARENT);
+					HFONT hProgressFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT calcRect = textRect;
+					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+					int textHeight = calcRect.bottom - calcRect.top;
+					int containerHeight = textRect.bottom - textRect.top;
+					int offset = (containerHeight - textHeight) / 2;
+					textRect.top += offset;
+					textRect.bottom = textRect.top + textHeight;
+					RECT shadowRect = textRect;
+					OffsetRect(&shadowRect, 2, 2);
+					SetTextColor(hdc, RGB(10, 10, 10));
+					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+					SetTextColor(hdc, RGB(255, 255, 255));
+					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
