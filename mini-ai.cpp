@@ -37,6 +37,7 @@
 #define IDC_SAVE_BUTTON 101
 #define IDC_GENERATE_BUTTON 102
 #define IDC_COPY_BUTTON 103
+#define IDC_CLEAR_BUTTON 104
 
 // Shortcut Command IDs
 #define ID_ACCEL_LOAD     201
@@ -60,10 +61,15 @@ static HWND hEdit = nullptr;
 static HWND hBtnLoad = nullptr;
 static HWND hBtnSave = nullptr;
 static HWND hBtnCopy = nullptr;
+static HWND hBtnClear = nullptr;
 static HWND hBtnGenerate = nullptr;
 
+static float image_to_image_strength = 0.32f;
+static float image_to_image_txt_cfg = 2.0f;
+static int image_to_image_steps = 20;
+
 struct Res { int w, h; const wchar_t* name; };
-Res presets[] = { {512, 512, L"512x512"}, {768, 512, L"768x512"}, {512, 768, L"512x768"}, {1280, 720, L"1280x720"}, {960, 1280, L"960x1280"} };
+Res presets[] = { {512, 512, L"512x512"}, {800, 600, L"1024x1024"}, {768, 512, L"768x512"}, {512, 768, L"512x768"}, {1280, 720, L"1280x720"}, {960, 1280, L"960x1280"}, {1024, 1024, L"1024x1024"} };
 
 
 void SavePrompt(HWND hEdit) {
@@ -306,7 +312,24 @@ void trigger_generation()
 			img_params.sample_params.guidance.distilled_guidance = 3.5f;
 
 			sd_image_t init_img = {};
-			if (rgba != nullptr)
+			if (rgba2 != nullptr)
+			{
+				init_img.width = w2;
+				init_img.height = h2;
+				init_img.channel = 3;
+				init_img.data = (uint8_t*)malloc(w2 * h2 * 3);
+				for (int i = 0; i < w2 * h2; ++i)
+				{
+					init_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
+					init_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
+					init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
+				}
+				img_params.init_image = init_img;
+				img_params.strength = image_to_image_strength;
+				img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+				img_params.sample_params.sample_steps = image_to_image_steps;
+			}
+			else if (rgba != nullptr)
 			{
 				init_img.width = w;
 				init_img.height = h;
@@ -319,7 +342,9 @@ void trigger_generation()
 					init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 				}
 				img_params.init_image = init_img;
-				img_params.strength = 0.25f;
+				img_params.strength = image_to_image_strength;
+				img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+				img_params.sample_params.sample_steps = image_to_image_steps;
 			}
 
 			sd_image_t* image = nullptr;
@@ -527,11 +552,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 
 				// Position Buttons: Load (Square), Save (Square), Copy (Square), Generate (Fills remaining space)
-				int square_width = button_height; // 45px width
-				if (hBtnLoad)      MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnSave)      MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnCopy)      MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnGenerate)  MoveWindow(hBtnGenerate, square_width * 3, rc.bottom - button_height, rc.right - (square_width * 3), button_height, TRUE);
+				int square_width = button_height;
+				if (hBtnLoad)    MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
+				if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
+				if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
+				if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
+				if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 4, rc.bottom - button_height, rc.right - (square_width * 4), button_height, TRUE);
 			}
 			break;
 			case WM_DESTROY:
@@ -631,6 +657,29 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
+				else if (rgba == nullptr && !is_generating.load())
+				{
+					const wchar_t* status = L"The image will be generated here.\nYou can also drag and drop an image here to edit.";
+					SetBkMode(hdc, TRANSPARENT);
+					HFONT hProgressFont = CreateFontW(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT calcRect = textRect;
+					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+					int textHeight = calcRect.bottom - calcRect.top;
+					int containerHeight = textRect.bottom - textRect.top;
+					int offset = (containerHeight - textHeight) / 2;
+					textRect.top += offset;
+					textRect.bottom = textRect.top + textHeight;
+					RECT shadowRect = textRect;
+					OffsetRect(&shadowRect, 2, 2);
+					SetTextColor(hdc, RGB(10, 10, 10));
+					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+					SetTextColor(hdc, RGB(155, 155, 155));
+					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+					SelectObject(hdc, hOldFont);
+					DeleteObject(hProgressFont);
+				}
 
 				HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
 				RECT splitter_rect = { 0, draw_height, w2, draw_height + splitter_thickness };
@@ -657,6 +706,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					case IDC_COPY_BUTTON:
 					case ID_ACCEL_COPY:
 						handle_copy_image(hWnd);
+						break; 
+					case IDC_CLEAR_BUTTON:
+						if (rgba) { free(rgba); rgba = nullptr; }
+						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						redraw();
 						break;
 					case IDC_GENERATE_BUTTON:
 					case ID_ACCEL_GENERATE:
@@ -869,6 +923,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	hBtnLoad = CreateWindowW(L"BUTTON", L"\xE8B7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_LOAD_BUTTON, hInstance, NULL);
 	hBtnSave = CreateWindowW(L"BUTTON", L"\xE74E", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_SAVE_BUTTON, hInstance, NULL);
 	hBtnCopy = CreateWindowW(L"BUTTON", L"\xE8C8", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_COPY_BUTTON, hInstance, NULL);
+	hBtnClear = CreateWindowW(L"BUTTON", L"\xE74D", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_CLEAR_BUTTON, hInstance, NULL);
 	hBtnGenerate = CreateWindowW(L"BUTTON", L"\u2728 Generate \u2728", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
 
 	HFONT hFont = CreateFont(34, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
@@ -879,13 +934,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	SendMessageW(hBtnLoad, WM_SETFONT, (WPARAM)hIconFont, TRUE);
 	SendMessageW(hBtnSave, WM_SETFONT, (WPARAM)hIconFont, TRUE);
 	SendMessageW(hBtnCopy, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessageW(hBtnClear, WM_SETFONT, (WPARAM)hIconFont, TRUE);
 	HFONT hGenFont = CreateFontW(32, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
 	SendMessageW(hBtnGenerate, WM_SETFONT, (WPARAM)hGenFont, TRUE);
 
 	AddToolTip(window, hBtnLoad, L"Load Image (Ctrl+O)");
 	AddToolTip(window, hBtnSave, L"Save Image (Ctrl+S)");
 	AddToolTip(window, hBtnCopy, L"Copy Image to Clipboard (Ctrl+C)");
-	AddToolTip(window, hBtnGenerate, L"Generate Image from Prompt (Ctrl+Enter)");
+	AddToolTip(window, hBtnClear, L"Clear image and start over");
+	AddToolTip(window, hBtnGenerate, L"Generate Image from Prompt (Ctrl+Enter). If there is already an image, it will be used as input to generation");
 
 	ShowWindow(window, SW_SHOWDEFAULT);
 	DragAcceptFiles(window, TRUE);
@@ -908,6 +965,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	SetWindowTheme(hBtnLoad, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnSave, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnCopy, L"DarkMode_Explorer", NULL);
+	SetWindowTheme(hBtnClear, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnGenerate, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hEdit, L"DarkMode_Explorer", NULL);
 
