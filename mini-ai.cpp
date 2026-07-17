@@ -94,13 +94,13 @@ void LoadPrompt(HWND hEdit) {
 void set_title()
 {
 	wchar_t text[1024] = {};
-	if (current_download.empty())
+	if (progress > 0)
 	{
 		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%)", w2, h2, progress);
 	}
 	else
 	{
-		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%) | Downloading: %s", w2, h2, progress, current_download.c_str());
+		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx", w2, h2);
 	}
 	SetWindowText(window, text);
 }
@@ -112,7 +112,7 @@ void EnsureModelExists(const wchar_t* url, const wchar_t* fileName)
 		return;
 
 	current_download = fileName;
-	set_title();
+	InvalidateRect(window, NULL, TRUE);
 	
 	std::wstring cmd = L"curl -L \"" + std::wstring(url) + L"\" -o \"" + std::wstring(fileName) + L"\" -C -";
 	int result = _wsystem(cmd.c_str());
@@ -122,7 +122,7 @@ void EnsureModelExists(const wchar_t* url, const wchar_t* fileName)
 	}
 
 	current_download.clear();
-	set_title();
+	InvalidateRect(window, NULL, TRUE);
 }
 
 void AddToolTip(HWND hwndParent, HWND hwndTarget, const wchar_t* text)
@@ -570,7 +570,32 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					DeleteObject(hBrush2);
 				}
 
-				if (progress > 0 && progress < 100)
+				if (!current_download.empty())
+				{
+					// Print download progress text to image area:
+					wchar_t status[4096] = {};
+					wsprintfW(status, L"Downloading model:\n%s", current_download.c_str());
+					SetBkMode(hdc, TRANSPARENT);
+					HFONT hProgressFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT calcRect = textRect;
+					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+					int textHeight = calcRect.bottom - calcRect.top;
+					int containerHeight = textRect.bottom - textRect.top;
+					int offset = (containerHeight - textHeight) / 2;
+					textRect.top += offset;
+					textRect.bottom = textRect.top + textHeight;
+					RECT shadowRect = textRect;
+					OffsetRect(&shadowRect, 2, 2);
+					SetTextColor(hdc, RGB(10, 10, 10));
+					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+					SetTextColor(hdc, RGB(255, 255, 255));
+					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+					SelectObject(hdc, hOldFont);
+					DeleteObject(hProgressFont);
+				}
+				else if (progress > 0 && progress < 100)
 				{
 					// Print progress text to image area:
 					wchar_t status[32] = {};
