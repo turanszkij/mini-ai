@@ -230,6 +230,11 @@ void trigger_generation()
 
 		SavePrompt(hEdit);
 
+		// CHANGE WORKING DIRECTORY FOR DLL DEPENDENCIES:
+		wchar_t originalWorkingDir[MAX_PATH];
+		_wgetcwd(originalWorkingDir, MAX_PATH);
+		_wchdir(L"lib");
+
 		HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
 		assert(stable_diffusion);
 		LINK_DLL_FUNCTION(sd_ctx_params_init, stable_diffusion);
@@ -242,16 +247,32 @@ void trigger_generation()
 		LINK_DLL_FUNCTION(sd_set_progress_callback, stable_diffusion);
 		LINK_DLL_FUNCTION(sd_set_preview_callback, stable_diffusion);
 
+		wchar_t vae_path[MAX_PATH] = {};
+		wchar_t text_encoder_path[MAX_PATH] = {};
+		wchar_t diffusion_model_path[MAX_PATH] = {};
+
+		_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
+		_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+		_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
+
+		char u8_vae_path[MAX_PATH] = {};
+		char u8_text_encoder_path[MAX_PATH] = {};
+		char u8_diffusion_model_path[MAX_PATH] = {};
+
+		stbi_convert_wchar_to_utf8(u8_vae_path, MAX_PATH, vae_path);
+		stbi_convert_wchar_to_utf8(u8_text_encoder_path, MAX_PATH, text_encoder_path);
+		stbi_convert_wchar_to_utf8(u8_diffusion_model_path, MAX_PATH, diffusion_model_path);
+
 		CreateDirectory(L"models", 0);
-		EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", L"models/ae.safetensors");
-		EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", L"models/z_image_turbo-Q4_K.gguf");
-		EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", L"models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+		EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
+		EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
+		EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
 
 		sd_ctx_params_t sd_params;
 		sd_ctx_params_init(&sd_params);
-		sd_params.diffusion_model_path = "models/z_image_turbo-Q4_K.gguf";
-		sd_params.vae_path = "models/ae.safetensors";
-		sd_params.llm_path = "models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf";
+		sd_params.vae_path = u8_vae_path;
+		sd_params.llm_path = u8_text_encoder_path;
+		sd_params.diffusion_model_path = u8_diffusion_model_path;
 		sd_params.wtype = SD_TYPE_COUNT;
 		sd_params.n_threads = -1;
 		sd_params.rng_type = STD_DEFAULT_RNG;
@@ -311,6 +332,10 @@ void trigger_generation()
 			free_sd_ctx(sd_ctx);
 		}
 		FreeLibrary(stable_diffusion);
+
+		// RESTORE WORKING DIRECTORY:
+		_wchdir(originalWorkingDir);
+
 		is_generating.store(false);
 	}).detach();
 }
