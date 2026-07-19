@@ -1,5 +1,4 @@
-﻿#include "resource.h"
-#include <Windows.h>
+﻿#include <Windows.h>
 #include <commdlg.h> // Common Dialogs for Load/Save
 
 #include <dwmapi.h> // DwmSetWindowAttribute
@@ -37,10 +36,14 @@
 
 #include "lib/stable-diffusion/stable-diffusion.h"
 
+#pragma warning(push)
+#pragma warning(disable: 4267)
+#pragma warning(disable: 4305)
 #include "lib/llama/llama.h"
 #include "lib/llama/mtmd.h"
 #include "lib/llama/mtmd-image.h"
 #include "lib/llama/mtmd-helper.h"
+#pragma warning(pop)
 
 #define LINK_DLL_FUNCTION(name, dll) using PFN_##name = decltype(&name); PFN_##name name = (PFN_##name)GetProcAddress(dll, #name); assert(name);
 
@@ -58,6 +61,8 @@
 #define ID_ACCEL_SAVE     202
 #define ID_ACCEL_COPY     203
 #define ID_ACCEL_GENERATE 204
+
+#define IDI_APPICON 101
 
 enum MODE
 {
