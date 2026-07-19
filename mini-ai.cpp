@@ -426,10 +426,12 @@ void sd_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, vo
 	redraw();
 }
 
-static std::string llama_logs;
 void llama_callback(enum ggml_log_level level, const char* text, void* user_data) 
 {
-	llama_logs += text;
+	if (level >= GGML_LOG_LEVEL_ERROR)
+	{
+		current_errors += text;
+	}
 	OutputDebugStringA(text);
 }
 
@@ -543,14 +545,12 @@ void trigger_generation()
 			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
 			if (model == nullptr)
 			{
-				MessageBoxA(window, llama_logs.c_str(), "llama_model_load_from_file failure", 0);
 				return;
 			}
 
 			llama_context* ctx = llama_init_from_model(model, ctx_params);
 			if (ctx == nullptr)
 			{
-				MessageBoxA(window, llama_logs.c_str(), "llama_init_from_model failure", 0);
 				return;
 			}
 
@@ -562,7 +562,6 @@ void trigger_generation()
 			mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
 			if(ctx_mtmd == nullptr)
 			{
-				MessageBoxA(window, llama_logs.c_str(), "mtmd_init_from_file failure", 0);
 				return;
 			}
 
@@ -591,14 +590,12 @@ void trigger_generation()
 
 			if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) != 0)
 			{
-				MessageBoxA(window, llama_logs.c_str(), "mtmd_tokenize failure", 0);
 				return;
 			}
 
 			llama_pos n_past = 0;
 			if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) != 0)
 			{
-				MessageBoxA(window, llama_logs.c_str(), "mtmd_helper_eval_chunks failure", 0);
 				return;
 			}
 
