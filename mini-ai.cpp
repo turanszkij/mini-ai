@@ -1077,7 +1077,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING, 1099, L"New image");
 					AppendMenuW(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
 					AppendMenuW(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
-					AppendMenuW(hMenu, MF_STRING, 1102, L"Original size");
+					AppendMenuW(hMenu, MF_STRING, 1102, L"50%");
+					AppendMenuW(hMenu, MF_STRING, 1103, L"100%");
+					AppendMenuW(hMenu, MF_STRING, 1104, L"200%");
+					AppendMenuW(hMenu, MF_STRING, 1105, L"400%");
 
 					// 2. Add Separator
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -1102,10 +1105,46 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					else if (selection == 1101) { // Paste
 						handle_paste_image(hWnd);
 					}
-					else if (selection == 1102) { // Original size
+					else if (selection == 1102) { // 50%
+						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						w2 = w / 2;
+						h2 = h / 2;
+						resize();
+
+						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
+						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+						if (rgba) redraw();
+						redraw();
+					}
+					else if (selection == 1103) { // 100%
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
 						w2 = w;
 						h2 = h;
+
+						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
+						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+						if (rgba) redraw();
+						redraw();
+					}
+					else if (selection == 1104) { // 200%
+						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						w2 = w * 2;
+						h2 = h * 2;
+						resize();
+
+						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
+						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+						if (rgba) redraw();
+						redraw();
+					}
+					else if (selection == 1105) { // 400%
+						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						w2 = w * 4;
+						h2 = h * 4;
+						resize();
 
 						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
 						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
