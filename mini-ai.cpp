@@ -51,6 +51,7 @@
 #define ID_ACCEL_COPY     203
 #define ID_ACCEL_GENERATE 204
 
+static bool is_edit_mode = false;
 static wchar_t originalWorkingDir[MAX_PATH];
 static int w = 512, h = 512, c = 3;
 static unsigned char* rgba = nullptr;
@@ -499,39 +500,42 @@ void trigger_generation()
 			img_params.sample_params.guidance.distilled_guidance = 3.5f;
 
 			sd_image_t init_img = {};
-			if (rgba2 != nullptr)
+			if (is_edit_mode)
 			{
-				init_img.width = w2;
-				init_img.height = h2;
-				init_img.channel = 3;
-				init_img.data = (uint8_t*)malloc(w2 * h2 * 3);
-				for (int i = 0; i < w2 * h2; ++i)
+				if (rgba2 != nullptr)
 				{
-					init_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
-					init_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
-					init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
+					init_img.width = w2;
+					init_img.height = h2;
+					init_img.channel = 3;
+					init_img.data = (uint8_t*)malloc(w2 * h2 * 3);
+					for (int i = 0; i < w2 * h2; ++i)
+					{
+						init_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
+						init_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
+						init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
+					}
+					img_params.init_image = init_img;
+					img_params.strength = image_to_image_strength;
+					img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+					img_params.sample_params.sample_steps = image_to_image_steps;
 				}
-				img_params.init_image = init_img;
-				img_params.strength = image_to_image_strength;
-				img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
-				img_params.sample_params.sample_steps = image_to_image_steps;
-			}
-			else if (rgba != nullptr)
-			{
-				init_img.width = w;
-				init_img.height = h;
-				init_img.channel = 3;
-				init_img.data = (uint8_t*)malloc(w * h * 3);
-				for (int i = 0; i < w * h; ++i)
+				else if (rgba != nullptr)
 				{
-					init_img.data[i * 3 + 0] = rgba[i * 4 + 0];
-					init_img.data[i * 3 + 1] = rgba[i * 4 + 1];
-					init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
+					init_img.width = w;
+					init_img.height = h;
+					init_img.channel = 3;
+					init_img.data = (uint8_t*)malloc(w * h * 3);
+					for (int i = 0; i < w * h; ++i)
+					{
+						init_img.data[i * 3 + 0] = rgba[i * 4 + 0];
+						init_img.data[i * 3 + 1] = rgba[i * 4 + 1];
+						init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
+					}
+					img_params.init_image = init_img;
+					img_params.strength = image_to_image_strength;
+					img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+					img_params.sample_params.sample_steps = image_to_image_steps;
 				}
-				img_params.init_image = init_img;
-				img_params.strength = image_to_image_strength;
-				img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
-				img_params.sample_params.sample_steps = image_to_image_steps;
 			}
 
 			sd_image_t* image = nullptr;
@@ -1249,6 +1253,30 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			}
 			break;
 
+			case WM_NOTIFY:
+			{
+				NMHDR* pNmhdr = (NMHDR*)lParam;
+				if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
+				{
+					HMENU hMenu = CreatePopupMenu();
+					AppendMenuW(hMenu, MF_STRING | (is_edit_mode ? 0 : MF_CHECKED), 101, L"Generate New Image");
+					AppendMenuW(hMenu, MF_STRING | (is_edit_mode ? MF_CHECKED : 0), 102, L"Edit Image");
+
+					RECT rc;
+					GetWindowRect(hBtnGenerate, &rc);
+					int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, rc.left, rc.bottom, 0, hWnd, NULL);
+
+					if (selection == 101) is_edit_mode = false;
+					if (selection == 102) is_edit_mode = true;
+
+					SetWindowTextW(hBtnGenerate, is_edit_mode ? L"\u2728 Edit \u2728" : L"\u2728 Generate \u2728");
+
+					DestroyMenu(hMenu);
+					return 0;
+				}
+			}
+			break;
+
 			case WM_SETCURSOR:
 			{
 				POINT pt;
@@ -1301,7 +1329,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	hBtnSave = CreateWindowW(L"BUTTON", L"\xE74E", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_SAVE_BUTTON, hInstance, NULL);
 	hBtnCopy = CreateWindowW(L"BUTTON", L"\xE8C8", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_COPY_BUTTON, hInstance, NULL);
 	hBtnClear = CreateWindowW(L"BUTTON", L"\xE74D", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_CLEAR_BUTTON, hInstance, NULL);
-	hBtnGenerate = CreateWindowW(L"BUTTON", L"\u2728 Generate \u2728", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
+	hBtnGenerate = CreateWindowW(L"BUTTON", L"\u2728 Generate \u2728", WS_CHILD | WS_VISIBLE | BS_SPLITBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
 	hBtnUndo = CreateWindowW(L"BUTTON", L"\xE7A7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_UNDO_BUTTON, hInstance, NULL);
 	hBtnRedo = CreateWindowW(L"BUTTON", L"\xE7A6", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_REDO_BUTTON, hInstance, NULL);
 
