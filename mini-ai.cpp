@@ -646,6 +646,10 @@ void trigger_generation()
 			llama_free(ctx);
 			llama_model_free(model);
 
+			FreeLibrary(llama);
+			FreeLibrary(ggml);
+			FreeLibrary(mtmd);
+
 			int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
 			std::wstring wstr(cnt, 0);
 			MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
