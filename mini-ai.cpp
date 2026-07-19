@@ -257,35 +257,45 @@ void update_undo_redo_states()
 }
 void push_history(unsigned char* raw_rgba, int width, int height, bool save_output = false)
 {
-	if (!raw_rgba) return;
-
 	int out_size = 0;
 	// Compress to PNG in memory
-	unsigned char* png_data = stbi_write_png_to_mem(raw_rgba, width * 4, width, height, 4, &out_size);
+	unsigned char* png_data = nullptr;
+	
+	if (raw_rgba != nullptr)
+	{
+		png_data = stbi_write_png_to_mem(raw_rgba, width * 4, width, height, 4, &out_size);
+	}
 
-	if (!png_data) return;
-
-	std::lock_guard<std::mutex> lock(history_mutex);
+	std::scoped_lock lock(history_mutex);
 
 	// If we undo'd and then generate/load a new image, clear the "redo" future
 	while (history.size() > (size_t)(history_index + 1))
 	{
-		free(history.back().data);
+		if (history.back().data != nullptr)
+			free(history.back().data);
 		history.pop_back();
 	}
 
 	// Cap history size (e.g., 10 images)
 	if (history.size() >= 10)
 	{
-		free(history[0].data);
+		if (history[0].data != nullptr)
+			free(history[0].data);
 		history.erase(history.begin());
+		history_index--;
+	}
+
+	// Last empty history is completely replaced
+	if (history.size() > 0 && history.back().data == nullptr)
+	{
+		history.pop_back();
 		history_index--;
 	}
 
 	history.push_back({ png_data, out_size, width, height });
 	history_index++;
 
-	if (save_output)
+	if (save_output && png_data != nullptr)
 	{
 		wchar_t output_path[MAX_PATH] = {};
 		_snwprintf(output_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/output");
@@ -315,19 +325,23 @@ void load_history_entry()
 	std::lock_guard<std::mutex> lock(history_mutex);
 	if (history_index < 0 || history_index >= (int)history.size()) return;
 
-	int w_temp, h_temp, c_temp;
-	unsigned char* decoded = stbi_load_from_memory(history[history_index].data, history[history_index].size, &w_temp, &h_temp, &c_temp, 4);
+	if (rgba) { free(rgba); rgba = nullptr; }
+	if (rgba2) { free(rgba2); rgba2 = nullptr; }
 
-	if (decoded)
+	if (history[history_index].data != nullptr)
 	{
-		if (rgba) free(rgba);
-		if (rgba2) { free(rgba2); rgba2 = nullptr; }
+		int w_temp, h_temp, c_temp;
+		unsigned char* decoded = stbi_load_from_memory(history[history_index].data, history[history_index].size, &w_temp, &h_temp, &c_temp, 4);
 
-		rgba = decoded;
-		w = w_temp;
-		h = h_temp;
-		redraw();
+		if (decoded)
+		{
+			rgba = decoded;
+			w = w_temp;
+			h = h_temp;
+		}
 	}
+
+	redraw();
 }
 void handle_undo()
 {
@@ -1009,6 +1023,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					case IDC_CLEAR_BUTTON:
 						if (rgba) { free(rgba); rgba = nullptr; }
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						push_history(nullptr, w, h);
 						redraw();
 						break;
 					case IDC_GENERATE_BUTTON:
