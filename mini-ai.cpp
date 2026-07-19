@@ -1,4 +1,4 @@
-#include <Windows.h>
+﻿#include <Windows.h>
 #include <commdlg.h> // Common Dialogs for Load/Save
 #include <dwmapi.h> // DwmSetWindowAttribute
 #pragma comment(lib, "dwmapi.lib")
@@ -18,6 +18,7 @@
 #include <fstream>
 #include <atomic>
 #include <filesystem>
+#include <mutex>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_WINDOWS_UTF8
@@ -41,6 +42,8 @@
 #define IDC_GENERATE_BUTTON 102
 #define IDC_COPY_BUTTON 103
 #define IDC_CLEAR_BUTTON 104
+#define IDC_UNDO_BUTTON 105
+#define IDC_REDO_BUTTON 106
 
 // Shortcut Command IDs
 #define ID_ACCEL_LOAD     201
@@ -67,6 +70,8 @@ static HWND hBtnSave = nullptr;
 static HWND hBtnCopy = nullptr;
 static HWND hBtnClear = nullptr;
 static HWND hBtnGenerate = nullptr;
+static HWND hBtnUndo = nullptr;
+static HWND hBtnRedo = nullptr;
 
 static float image_to_image_strength = 0.32f;
 static float image_to_image_txt_cfg = 2.0f;
@@ -233,6 +238,88 @@ void redraw()
 	resize();
 	InvalidateRect(window, NULL, TRUE);
 	UpdateWindow(window);
+}
+
+
+struct HistoryEntry {
+	unsigned char* data;
+	int size;
+	int w, h;
+};
+static std::vector<HistoryEntry> history;
+static int history_index = -1;
+static std::mutex history_mutex;
+void update_undo_redo_states()
+{
+	EnableWindow(hBtnUndo, history_index > 0);
+	EnableWindow(hBtnRedo, history_index < (int)history.size() - 1);
+}
+void push_history(unsigned char* raw_rgba, int width, int height)
+{
+	if (!raw_rgba) return;
+
+	int out_size = 0;
+	// Compress to PNG in memory
+	unsigned char* png_data = stbi_write_png_to_mem(raw_rgba, width * 4, width, height, 4, &out_size);
+
+	if (!png_data) return;
+
+	std::lock_guard<std::mutex> lock(history_mutex);
+
+	// If we undo'd and then generate/load a new image, clear the "redo" future
+	while (history.size() > (size_t)(history_index + 1))
+	{
+		free(history.back().data);
+		history.pop_back();
+	}
+
+	// Cap history size (e.g., 10 images)
+	if (history.size() >= 10)
+	{
+		free(history[0].data);
+		history.erase(history.begin());
+		history_index--;
+	}
+
+	history.push_back({ png_data, out_size, width, height });
+	history_index++;
+
+	update_undo_redo_states();
+}
+void load_history_entry()
+{
+	std::lock_guard<std::mutex> lock(history_mutex);
+	if (history_index < 0 || history_index >= (int)history.size()) return;
+
+	int w_temp, h_temp, c_temp;
+	unsigned char* decoded = stbi_load_from_memory(history[history_index].data, history[history_index].size, &w_temp, &h_temp, &c_temp, 4);
+
+	if (decoded)
+	{
+		if (rgba) free(rgba);
+		if (rgba2) { free(rgba2); rgba2 = nullptr; }
+
+		rgba = decoded;
+		w = w_temp;
+		h = h_temp;
+		redraw();
+	}
+}
+void handle_undo()
+{
+	if (history_index > 0) {
+		history_index--;
+		load_history_entry();
+	}
+	update_undo_redo_states();
+}
+void handle_redo()
+{
+	if (history_index < (int)history.size() - 1) {
+		history_index++;
+		load_history_entry();
+	}
+	update_undo_redo_states();
 }
 
 void sd_log(enum sd_log_level_t level, const char* text, void* data)
@@ -435,6 +522,7 @@ void trigger_generation()
 					dst.b = src.b;
 					dst.a = 255;
 				}
+				push_history(rgba, w, h);
 				redraw();
 			}
 			free_sd_ctx(sd_ctx);
@@ -480,6 +568,7 @@ void handle_load_image(HWND hWnd)
 
 		if (rgba)
 		{
+			push_history(rgba, w, h);
 			RECT rc = { 0, 0, w, h + button_height + text_height };
 			AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
 			SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
@@ -583,19 +672,60 @@ void handle_copy_image(HWND hWnd)
 	}
 }
 
-void handle_paste_image(HWND hWnd) 
+void handle_paste_image(HWND hWnd)
 {
 	if (!OpenClipboard(hWnd)) return;
 
+	// 1. Check if the clipboard contains copied files (e.g., from Desktop/Explorer)
+	if (IsClipboardFormatAvailable(CF_HDROP))
+	{
+		HANDLE hDrop = GetClipboardData(CF_HDROP);
+		if (hDrop)
+		{
+			wchar_t wfilename[1024] = {};
+			// Grab the first file path copied to the clipboard
+			if (DragQueryFileW((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
+			{
+				CloseClipboard(); // We have the path, we can close the clipboard now
+
+				char filename[4096] = {};
+				stbi_convert_wchar_to_utf8(filename, sizeof(filename), wfilename);
+
+				int new_w, new_h, new_c;
+				unsigned char* new_rgba = stbi_load(filename, &new_w, &new_h, &new_c, 4);
+
+				if (new_rgba)
+				{
+					if (rgba) free(rgba);
+					if (rgba2) { free(rgba2); rgba2 = nullptr; }
+
+					rgba = new_rgba;
+					w = new_w;
+					h = new_h;
+
+					push_history(rgba, w, h);
+
+					// Resize window to fit the new image
+					RECT rc = { 0, 0, w, h + button_height + text_height };
+					AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+					SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+					redraw();
+				}
+				return; // Exit here so we don't proceed to the DIB check
+			}
+		}
+	}
+
+	// 2. Fallback to checking for raw image data (e.g., from MS Paint or Photo Viewer)
 	HANDLE hData = GetClipboardData(CF_DIB);
-	if (!hData) 
+	if (!hData)
 	{
 		CloseClipboard();
 		return;
 	}
 
 	BITMAPINFO* pbi = (BITMAPINFO*)GlobalLock(hData);
-	if (pbi) 
+	if (pbi)
 	{
 		int width = pbi->bmiHeader.biWidth;
 		int height = abs(pbi->bmiHeader.biHeight);
@@ -605,9 +735,9 @@ void handle_paste_image(HWND hWnd)
 
 		// Simplified extraction (assumes 32-bit DIB)
 		unsigned char* src_bits = (unsigned char*)pbi + pbi->bmiHeader.biSize;
-		for (int y = 0; y < height; y++) 
+		for (int y = 0; y < height; y++)
 		{
-			for (int x = 0; x < width; x++) 
+			for (int x = 0; x < width; x++)
 			{
 				// Clipboard DIB is BGRA
 				pixels[(y * width + x) * 4 + 0] = src_bits[((height - 1 - y) * width + x) * 4 + 2]; // R
@@ -619,14 +749,17 @@ void handle_paste_image(HWND hWnd)
 		GlobalUnlock(hData);
 
 		if (rgba) free(rgba);
-		if (rgba2) free(rgba2);
-		rgba2 = nullptr;
+		if (rgba2) { free(rgba2); rgba2 = nullptr; }
+
 		rgba = pixels;
-		w = width; h = height;
+		w = width;
+		h = height;
+
+		push_history(rgba, w, h);
 
 		// Resize window to fit
 		RECT rc = { 0, 0, w, h + button_height + text_height };
-		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), FALSE);
+		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
 		SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 		redraw();
 	}
@@ -670,7 +803,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
 				if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
 				if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 4, rc.bottom - button_height, rc.right - (square_width * 4), button_height, TRUE);
+				if (hBtnUndo)    MoveWindow(hBtnUndo, square_width * 4, rc.bottom - button_height, square_width, button_height, TRUE);
+				if (hBtnRedo)    MoveWindow(hBtnRedo, square_width * 5, rc.bottom - button_height, square_width, button_height, TRUE);
+				if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 6, rc.bottom - button_height, rc.right - (square_width * 6), button_height, TRUE);
 			}
 			break;
 			case WM_DESTROY:
@@ -855,18 +990,31 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					case IDC_GENERATE_BUTTON:
 					case ID_ACCEL_GENERATE:
 						trigger_generation();
+						break; 
+					case IDC_UNDO_BUTTON:
+						handle_undo();
+						break;
+					case IDC_REDO_BUTTON:
+						handle_redo();
 						break;
 					}
 				}
 				break; 
 			
 			case WM_KEYDOWN:
-			if (wParam == 'V' && (GetKeyState(VK_CONTROL) & 0x8000))
+			if (GetKeyState(VK_CONTROL) & 0x8000)
 			{
-				// Only paste image if textbox is NOT in focus
-				if (GetFocus() != hEdit)
+				if (wParam == 'V')
 				{
-					handle_paste_image(hWnd);
+					if (GetFocus() != hEdit) handle_paste_image(hWnd);
+				}
+				else if (wParam == 'Z')
+				{
+					if (GetFocus() != hEdit) handle_undo();
+				}
+				else if (wParam == 'Y')
+				{
+					if (GetFocus() != hEdit) handle_redo();
 				}
 			}
 			break;
@@ -881,6 +1029,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING, 1099, L"New image");
 					AppendMenuW(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
 					AppendMenuW(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
+					AppendMenuW(hMenu, MF_STRING, 1102, L"Original size");
 
 					// 2. Add Separator
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -904,6 +1053,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					}
 					else if (selection == 1101) { // Paste
 						handle_paste_image(hWnd);
+					}
+					else if (selection == 1102) { // Original size
+						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						w2 = w;
+						h2 = h;
+
+						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
+						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+						if (rgba) redraw();
+						redraw();
 					}
 					// Handle Resolution Selection
 					else {
@@ -973,11 +1133,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						rgba2 = nullptr;
 					}
 					rgba = stbi_load(filename, &w, &h, &c, 4);
+					if (rgba) push_history(rgba, w, h);
 				}
 				RECT rc = { 0, 0, w, h + button_height + text_height };
 				AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
 				SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 				SetForegroundWindow(hWnd);
+				redraw();
 			}
 			break;
 
@@ -1000,8 +1162,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					is_dragging = false;
 					ReleaseCapture();
-
-					// Only resize heavy layout representations when mouse interaction closes out
 					if (rgba)
 					{
 						redraw();
@@ -1036,9 +1196,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
 						if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
 						if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 4, rc.bottom - button_height, rc.right - (square_width * 4), button_height, TRUE);
+						if (hBtnUndo)    MoveWindow(hBtnUndo, square_width * 4, rc.bottom - button_height, square_width, button_height, TRUE);
+						if (hBtnRedo)    MoveWindow(hBtnRedo, square_width * 5, rc.bottom - button_height, square_width, button_height, TRUE);
+						if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 6, rc.bottom - button_height, rc.right - (square_width * 6), button_height, TRUE);
 
 						InvalidateRect(hWnd, NULL, TRUE);
+						if (rgba)
+						{
+							redraw();
+						}
 					}
 				}
 			}
@@ -1097,6 +1263,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	hBtnCopy = CreateWindowW(L"BUTTON", L"\xE8C8", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_COPY_BUTTON, hInstance, NULL);
 	hBtnClear = CreateWindowW(L"BUTTON", L"\xE74D", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_CLEAR_BUTTON, hInstance, NULL);
 	hBtnGenerate = CreateWindowW(L"BUTTON", L"\u2728 Generate \u2728", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
+	hBtnUndo = CreateWindowW(L"BUTTON", L"\xE7A7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_UNDO_BUTTON, hInstance, NULL);
+	hBtnRedo = CreateWindowW(L"BUTTON", L"\xE7A6", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_REDO_BUTTON, hInstance, NULL);
 
 	HFONT hFont = CreateFont(34, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
 	SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -1107,6 +1275,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	SendMessageW(hBtnSave, WM_SETFONT, (WPARAM)hIconFont, TRUE);
 	SendMessageW(hBtnCopy, WM_SETFONT, (WPARAM)hIconFont, TRUE);
 	SendMessageW(hBtnClear, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessageW(hBtnUndo, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessageW(hBtnRedo, WM_SETFONT, (WPARAM)hIconFont, TRUE);
 	HFONT hGenFont = CreateFontW(32, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
 	SendMessageW(hBtnGenerate, WM_SETFONT, (WPARAM)hGenFont, TRUE);
 
@@ -1114,7 +1284,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	AddToolTip(window, hBtnSave, L"Save Image (Ctrl+S)");
 	AddToolTip(window, hBtnCopy, L"Copy Image to Clipboard (Ctrl+C)");
 	AddToolTip(window, hBtnClear, L"Clear image and start over");
+	AddToolTip(window, hBtnUndo, L"Previous image");
+	AddToolTip(window, hBtnRedo, L"Next image");
 	AddToolTip(window, hBtnGenerate, L"Generate Image from Prompt (Ctrl+Enter). If there is already an image, it will be used as input to generation");
+
+	update_undo_redo_states();
 
 	ShowWindow(window, SW_SHOWDEFAULT);
 	DragAcceptFiles(window, TRUE);
@@ -1138,6 +1312,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	SetWindowTheme(hBtnSave, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnCopy, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnClear, L"DarkMode_Explorer", NULL);
+	SetWindowTheme(hBtnUndo, L"DarkMode_Explorer", NULL);
+	SetWindowTheme(hBtnRedo, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnGenerate, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hEdit, L"DarkMode_Explorer", NULL);
 
@@ -1145,10 +1321,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 	// keyboard shortcuts
 	ACCEL accels[] = {
-		{ FCONTROL | FVIRTKEY, 'O', ID_ACCEL_LOAD },     // Ctrl + O
-		{ FCONTROL | FVIRTKEY, 'S', ID_ACCEL_SAVE },     // Ctrl + S
-		{ FCONTROL | FVIRTKEY, 'C', ID_ACCEL_COPY },     // Ctrl + C
-		{ FCONTROL | FVIRTKEY, VK_RETURN, ID_ACCEL_GENERATE } // Ctrl + Enter
+		{ FCONTROL | FVIRTKEY, 'O', ID_ACCEL_LOAD },
+		{ FCONTROL | FVIRTKEY, 'S', ID_ACCEL_SAVE },
+		{ FCONTROL | FVIRTKEY, 'C', ID_ACCEL_COPY },
+		{ FCONTROL | FVIRTKEY, VK_RETURN, ID_ACCEL_GENERATE }
 	};
 	HACCEL hAccel = CreateAcceleratorTableW(accels, ARRAYSIZE(accels));
 
