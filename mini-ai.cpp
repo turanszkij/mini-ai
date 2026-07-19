@@ -69,6 +69,7 @@ enum MODE
 	MODE_IMAGE_GENERATE,
 	MODE_IMAGE_EDIT,
 	MODE_IMAGE_DESCRIBE,
+	MODE_IMAGE_STORY,
 } static mode = MODE_IMAGE_GENERATE;
 static wchar_t originalWorkingDir[MAX_PATH];
 static int w = 512, h = 512, c = 3;
@@ -451,17 +452,40 @@ void trigger_generation()
 	current_errors.clear();
 
 	std::thread([] {
-		if (mode == MODE_IMAGE_DESCRIBE)
+		if (mode == MODE_IMAGE_DESCRIBE || mode == MODE_IMAGE_STORY)
 		{
+			if (rgba == nullptr)
+			{
+				current_errors = "There is no image to describe!";
+				redraw();
+				return;
+			}
+
 			// Use llama library for text generation:
 			_wchdir(L"lib/llama");
-			
-			const char prompt[] = "You are an expert descriptive writer who focuses on details and vivid imagery. Describe this image in exquisite detail, write 3 paragraphs.";
+
+			std::string prompt;
+			static const char prompt_describe[] =
+				"Describe the image in a natural, descriptive style."
+				"Do not use markdown, bullet points, headers, or code blocks. "
+				"Focus on sensory details and atmosphere. Do not repeat the description.";
+			static const char prompt_story[] =
+				"Create a long-format story based on this image that reads like a book."
+				"Do not use markdown, bullet points, headers, or code blocks. "
+				"Focus on sensory details and atmosphere. Do not repeat the description.";
+			if (mode == MODE_IMAGE_DESCRIBE)
+			{
+				prompt = prompt_describe;
+			}
+			else
+			{
+				prompt = prompt_story;
+			}
 
 			wchar_t model_path[MAX_PATH] = {};
 			wchar_t mmproj_path[MAX_PATH] = {};
-			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/moondream2-text-model-f16.gguf");
-			_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/moondream2-mmproj-f16.gguf");
+			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3.5-2B-Q5_K_M.gguf");
+			_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-F16.gguf");
 
 			char u8_model_path[MAX_PATH] = {};
 			char u8_mmproj_path[MAX_PATH] = {};
@@ -472,8 +496,8 @@ void trigger_generation()
 			wchar_t models_path[MAX_PATH] = {};
 			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 			CreateDirectory(models_path, 0);
-			EnsureModelExists(L"https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-text-model-f16.gguf?download=true", model_path);
-			EnsureModelExists(L"https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-mmproj-f16.gguf?download=true", mmproj_path);
+			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q5_K_M.gguf?download=true", model_path);
+			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-F16.gguf?download=true", mmproj_path);
 
 			HMODULE llama = LoadLibrary(L"llama.dll");
 			if (llama == nullptr)
@@ -500,6 +524,7 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(llama_init_from_model, llama);
 			LINK_DLL_FUNCTION(llama_sampler_chain_init, llama);
 			LINK_DLL_FUNCTION(llama_sampler_chain_add, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_penalties, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_greedy, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_mirostat_v2, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_temp, llama);
@@ -544,15 +569,11 @@ void trigger_generation()
 
 			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
 			if (model == nullptr)
-			{
 				return;
-			}
 
 			llama_context* ctx = llama_init_from_model(model, ctx_params);
 			if (ctx == nullptr)
-			{
 				return;
-			}
 
 			mtmd_context_params mtmd_params = mtmd_context_params_default();
 			mtmd_params.n_threads = 4;
@@ -561,9 +582,7 @@ void trigger_generation()
 
 			mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
 			if(ctx_mtmd == nullptr)
-			{
 				return;
-			}
 
 			// Convert RGBA -> RGB (mtmd expects RGB24)
 			std::vector<uint8_t> rgb_data(w * h * 3);
@@ -589,34 +608,30 @@ void trigger_generation()
 			const mtmd_bitmap* bitmaps[1] = { bitmap };
 
 			if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) != 0)
-			{
 				return;
-			}
 
 			llama_pos n_past = 0;
 			if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) != 0)
-			{
 				return;
-			}
 
 			llama_sampler_chain_params chain_params = {};
-			llama_sampler* smpl = llama_sampler_chain_init(chain_params); 
-			//llama_sampler_chain_add(smpl, llama_sampler_init_penalties(...));
-			llama_sampler_chain_add(smpl, llama_sampler_init_mirostat_v2(0, 0.1f, 5.0f));
-			llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.78f));
-			llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
+			llama_sampler* smpl = llama_sampler_chain_init(chain_params);
+			llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
+			//llama_sampler_chain_add(smpl, llama_sampler_init_mirostat_v2(0, 0.1f, 5.0f));
+			//llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.78f));
+			//llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
 			llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
 			llama_token new_token_id;
 			std::string result_text = "";
 			const struct llama_vocab* vocab = llama_model_get_vocab(model);
 			bool started_generating = false;
-			while (n_past < 1024) {
+			while (n_past < 2048) 
+			{
 				new_token_id = llama_sampler_sample(smpl, ctx, -1);
 
-				if (started_generating && llama_vocab_is_eog(vocab, new_token_id)) {
+				if (started_generating && llama_vocab_is_eog(vocab, new_token_id))
 					break;
-				}
 
 				char buf[256];
 				int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false);
@@ -625,10 +640,12 @@ void trigger_generation()
 					std::string piece(buf, n);
 
 					// Skip leading whitespace/newlines if we haven't started yet
-					if (!started_generating && (piece == "\n" || piece == " ")) {
+					if (!started_generating && (piece == "\n" || piece == " ")) 
+					{
 						// continue; // Optional: keep skipping until you hit real text
 					}
-					else {
+					else 
+					{
 						started_generating = true;
 						result_text += piece;
 					}
@@ -1550,6 +1567,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate New Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 103, L"Describe Image");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_STORY ? MF_CHECKED : 0), 104, L"Story from Image");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
@@ -1569,6 +1587,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					case 103:
 						mode = MODE_IMAGE_DESCRIBE;
 						SetWindowTextW(hBtnGenerate, L"\u2728 Describe \u2728");
+						break;
+					case 104:
+						mode = MODE_IMAGE_STORY;
+						SetWindowTextW(hBtnGenerate, L"\u2728 Story \u2728");
 						break;
 					}
 
