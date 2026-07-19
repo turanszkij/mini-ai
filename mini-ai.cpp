@@ -51,6 +51,7 @@
 #define ID_ACCEL_COPY     203
 #define ID_ACCEL_GENERATE 204
 
+static wchar_t originalWorkingDir[MAX_PATH];
 static int w = 512, h = 512, c = 3;
 static unsigned char* rgba = nullptr;
 static unsigned char* rgba2 = nullptr;
@@ -254,7 +255,7 @@ void update_undo_redo_states()
 	EnableWindow(hBtnUndo, history_index > 0);
 	EnableWindow(hBtnRedo, history_index < (int)history.size() - 1);
 }
-void push_history(unsigned char* raw_rgba, int width, int height)
+void push_history(unsigned char* raw_rgba, int width, int height, bool save_output = false)
 {
 	if (!raw_rgba) return;
 
@@ -283,6 +284,29 @@ void push_history(unsigned char* raw_rgba, int width, int height)
 
 	history.push_back({ png_data, out_size, width, height });
 	history_index++;
+
+	if (save_output)
+	{
+		wchar_t output_path[MAX_PATH] = {};
+		_snwprintf(output_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/output");
+		CreateDirectory(output_path, 0);
+
+		time_t t = std::time(nullptr);
+		struct tm* tmptr;
+		struct tm time_info;
+		tmptr = &time_info;
+		localtime_s(&time_info, &t);
+		std::wstringstream ss(L"");
+		ss << output_path << L"/";
+		ss << std::put_time(tmptr, L"%Y-%m-%d %H-%M-%S");
+		ss << ".png";
+		std::ofstream file(ss.str().c_str(), std::ios::binary | std::ios::trunc);
+		if (file.is_open())
+		{
+			file.write((const char*)png_data, (std::streamsize)out_size);
+			file.close();
+		}
+	}
 
 	update_undo_redo_states();
 }
@@ -386,8 +410,6 @@ void trigger_generation()
 		SavePrompt(hEdit);
 
 		// CHANGE WORKING DIRECTORY FOR DLL DEPENDENCIES:
-		wchar_t originalWorkingDir[MAX_PATH];
-		_wgetcwd(originalWorkingDir, MAX_PATH);
 		_wchdir(L"lib");
 
 		HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
@@ -522,7 +544,7 @@ void trigger_generation()
 					dst.b = src.b;
 					dst.a = 255;
 				}
-				push_history(rgba, w, h);
+				push_history(rgba, w, h, true); // save output!
 				redraw();
 			}
 			free_sd_ctx(sd_ctx);
@@ -774,6 +796,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		stbi_convert_wchar_to_utf8(filename, sizeof(filename), lpCmdLine);
 		rgba = stbi_load(filename, &w, &h, &c, 4);
 	}
+
+	_wgetcwd(originalWorkingDir, MAX_PATH); // save original working dir at startup
 
 	static bool exiting = false;
 	static auto WndProc = [](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT

@@ -367,3 +367,4 @@ FodyWeavers.xsd
 *.safetensors
 *.gguf
 *.txt
+*.png
