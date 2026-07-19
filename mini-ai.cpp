@@ -667,10 +667,27 @@ void trigger_generation()
 			FreeLibrary(ggml);
 			FreeLibrary(mtmd);
 
-			int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
-			std::wstring wstr(cnt, 0);
-			MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
-			SetWindowTextW(hEdit, wstr.c_str());
+			// text can contain leading spaces for some reason:
+			while (!result_text.empty() && result_text.front() == ' ')
+			{
+				result_text.erase(result_text.begin());
+			}
+			// Text line endings should be Windows-like for textbox:
+			size_t pos = 0;
+			while ((pos = result_text.find('\n', pos)) != std::string::npos) 
+			{
+				if (pos == 0 || result_text[pos - 1] != '\r') 
+				{  // Avoid turning existing \r\n into \r\r\n
+					result_text.insert(pos, 1, '\r');
+					pos += 2;  // Skip past the \r\n we just inserted
+				}
+				else 
+				{
+					++pos;
+				}
+			}
+			SetWindowTextA(hEdit, result_text.c_str());
+			OutputDebugStringA(result_text.c_str());
 		}
 		else
 		{
