@@ -675,7 +675,6 @@ void trigger_generation()
 		else
 		{
 			// Use stable diffusion library for image generation:
-			_wchdir(L"lib/stable-diffusion");
 
 			int length = GetWindowTextLengthW(hEdit);
 			std::wstring buffer(length, L'\0');
@@ -685,6 +684,7 @@ void trigger_generation()
 			stbi_convert_wchar_to_utf8(text.data(), text.length(), buffer.c_str());
 			SavePrompt(hEdit);
 
+			_wchdir(L"lib/stable-diffusion");
 			HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
 			if (stable_diffusion == nullptr)
 			{
