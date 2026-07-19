@@ -1,5 +1,7 @@
-﻿#include <Windows.h>
+﻿#include "resource.h"
+#include <Windows.h>
 #include <commdlg.h> // Common Dialogs for Load/Save
+
 #include <dwmapi.h> // DwmSetWindowAttribute
 #pragma comment(lib, "dwmapi.lib")
 
@@ -25,19 +27,22 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_WINDOWS_UTF8
-#include "stb_image.h"
+#include "lib/stb/stb_image.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
+#include "lib/stb/stb_image_write.h"
 
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
-#include "stb_image_resize2.h"
+#include "lib/stb/stb_image_resize2.h"
 
-#include "stable-diffusion.h"
+#include "lib/stable-diffusion/stable-diffusion.h"
 
-#include "resource.h"
+#include "lib/llama/llama.h"
+#include "lib/llama/mtmd.h"
+#include "lib/llama/mtmd-image.h"
+#include "lib/llama/mtmd-helper.h"
 
-#define LINK_DLL_FUNCTION(name, dll) using PFN_##name = decltype(&name); PFN_##name name = (PFN_##name)GetProcAddress(dll, #name)
+#define LINK_DLL_FUNCTION(name, dll) using PFN_##name = decltype(&name); PFN_##name name = (PFN_##name)GetProcAddress(dll, #name); assert(name);
 
 // Unique IDs for our buttons
 #define IDC_LOAD_BUTTON 100
@@ -54,7 +59,12 @@
 #define ID_ACCEL_COPY     203
 #define ID_ACCEL_GENERATE 204
 
-static bool is_edit_mode = false;
+enum MODE
+{
+	MODE_IMAGE_GENERATE,
+	MODE_IMAGE_EDIT,
+	MODE_IMAGE_DESCRIBE,
+} static mode = MODE_IMAGE_GENERATE;
 static wchar_t originalWorkingDir[MAX_PATH];
 static int w = 512, h = 512, c = 3;
 static unsigned char* rgba = nullptr;
@@ -411,6 +421,22 @@ void sd_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, vo
 	redraw();
 }
 
+static std::string llama_logs;
+void llama_callback(enum ggml_log_level level, const char* text, void* user_data) 
+{
+	llama_logs += text;
+	OutputDebugStringA(text);
+}
+
+bool my_llama_progress_callback(float in_progress, void* user_data)
+{
+	progress = int(in_progress * 100);
+	set_title();
+	InvalidateRect(window, NULL, FALSE);
+	UpdateWindow(window); // Force immediate refresh
+	return true;
+}
+
 void trigger_generation()
 {
 	if (is_generating.load())
@@ -418,160 +444,372 @@ void trigger_generation()
 	current_errors.clear();
 
 	std::thread([] {
-		int length = GetWindowTextLengthW(hEdit);
-		std::wstring buffer(length, L'\0');
-		GetWindowTextW(hEdit, &buffer[0], length + 1);
-		int utf8len = stbi_convert_wchar_to_utf8(nullptr, 0, buffer.c_str());
-		std::string text(utf8len, '\0');
-		stbi_convert_wchar_to_utf8(text.data(), text.length(), buffer.c_str());
-
-		SavePrompt(hEdit);
-
-		// CHANGE WORKING DIRECTORY FOR DLL DEPENDENCIES:
-		_wchdir(L"lib");
-
-		HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
-		assert(stable_diffusion);
-		LINK_DLL_FUNCTION(sd_ctx_params_init, stable_diffusion);
-		LINK_DLL_FUNCTION(new_sd_ctx, stable_diffusion);
-		LINK_DLL_FUNCTION(sd_img_gen_params_init, stable_diffusion);
-		LINK_DLL_FUNCTION(generate_image, stable_diffusion);
-		LINK_DLL_FUNCTION(sd_sample_params_init, stable_diffusion);
-		LINK_DLL_FUNCTION(free_sd_ctx, stable_diffusion);
-		LINK_DLL_FUNCTION(sd_set_log_callback, stable_diffusion);
-		LINK_DLL_FUNCTION(sd_set_progress_callback, stable_diffusion);
-		LINK_DLL_FUNCTION(sd_set_preview_callback, stable_diffusion);
-
-		wchar_t vae_path[MAX_PATH] = {};
-		wchar_t text_encoder_path[MAX_PATH] = {};
-		wchar_t diffusion_model_path[MAX_PATH] = {};
-
-		_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
-		_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
-		_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
-
-		char u8_vae_path[MAX_PATH] = {};
-		char u8_text_encoder_path[MAX_PATH] = {};
-		char u8_diffusion_model_path[MAX_PATH] = {};
-
-		stbi_convert_wchar_to_utf8(u8_vae_path, MAX_PATH, vae_path);
-		stbi_convert_wchar_to_utf8(u8_text_encoder_path, MAX_PATH, text_encoder_path);
-		stbi_convert_wchar_to_utf8(u8_diffusion_model_path, MAX_PATH, diffusion_model_path);
-
-		wchar_t models_path[MAX_PATH] = {};
-		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
-		CreateDirectory(models_path, 0);
-		EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
-		EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
-		EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
-
-		sd_ctx_params_t sd_params;
-		sd_ctx_params_init(&sd_params);
-		sd_params.vae_path = u8_vae_path;
-		sd_params.llm_path = u8_text_encoder_path;
-		sd_params.diffusion_model_path = u8_diffusion_model_path;
-		sd_params.wtype = SD_TYPE_COUNT;
-		sd_params.n_threads = -1;
-		sd_params.rng_type = STD_DEFAULT_RNG;
-		sd_params.vae_conv_direct = true;
-
-		sd_set_log_callback(sd_log, nullptr);
-		sd_set_progress_callback(sd_callback, nullptr);
-		sd_set_preview_callback(sd_preview, PREVIEW_PROJ, 2, true, false, nullptr);
-
-		sd_ctx_t* sd_ctx = new_sd_ctx(&sd_params);
-		if (sd_ctx != nullptr)
+		if (mode == MODE_IMAGE_DESCRIBE)
 		{
-			sd_img_gen_params_t img_params;
-			sd_img_gen_params_init(&img_params);
-			img_params.width = w2;
-			img_params.height = h2;
-			img_params.prompt = text.c_str();
-			img_params.strength = 0.0f;
-			img_params.batch_count = 1;
+			// Use llama library for text generation:
+			_wchdir(L"lib/llama");
+			
+			const char prompt[] = "You are an expert descriptive writer who focuses on details and vivid imagery. Describe this image in exquisite detail, write 3 paragraphs.";
 
-			img_params.vae_tiling_params.enabled = true;
+			wchar_t model_path[MAX_PATH] = {};
+			wchar_t mmproj_path[MAX_PATH] = {};
+			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/moondream2-text-model-f16.gguf");
+			_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/moondream2-mmproj-f16.gguf");
 
-			sd_sample_params_init(&img_params.sample_params);
-			img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-			img_params.sample_params.sample_steps = 8;
-			img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
-			img_params.sample_params.eta = 1.0f;
+			char u8_model_path[MAX_PATH] = {};
+			char u8_mmproj_path[MAX_PATH] = {};
 
-			img_params.sample_params.guidance.txt_cfg = 1.0f;
-			img_params.sample_params.guidance.img_cfg = 1.0f;
-			img_params.sample_params.guidance.distilled_guidance = 3.5f;
+			stbi_convert_wchar_to_utf8(u8_model_path, MAX_PATH, model_path);
+			stbi_convert_wchar_to_utf8(u8_mmproj_path, MAX_PATH, mmproj_path);
 
-			sd_image_t init_img = {};
-			if (is_edit_mode)
+			wchar_t models_path[MAX_PATH] = {};
+			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
+			CreateDirectory(models_path, 0);
+			EnsureModelExists(L"https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-text-model-f16.gguf?download=true", model_path);
+			EnsureModelExists(L"https://huggingface.co/moondream/moondream2-gguf/resolve/main/moondream2-mmproj-f16.gguf?download=true", mmproj_path);
+
+			HMODULE llama = LoadLibrary(L"llama.dll");
+			if (llama == nullptr)
 			{
-				if (rgba2 != nullptr)
-				{
-					init_img.width = w2;
-					init_img.height = h2;
-					init_img.channel = 3;
-					init_img.data = (uint8_t*)malloc(w2 * h2 * 3);
-					for (int i = 0; i < w2 * h2; ++i)
-					{
-						init_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
-						init_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
-						init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
-					}
-					img_params.init_image = init_img;
-					img_params.strength = image_to_image_strength;
-					img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
-					img_params.sample_params.sample_steps = image_to_image_steps;
+				MessageBoxA(window, "llama.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+			HMODULE ggml = LoadLibrary(L"ggml.dll");
+			if (ggml == nullptr)
+			{
+				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+			HMODULE mtmd = LoadLibrary(L"mtmd.dll");
+			if (mtmd == nullptr)
+			{
+				MessageBoxA(window, "mtmd.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+
+			LINK_DLL_FUNCTION(llama_model_default_params, llama);
+			LINK_DLL_FUNCTION(llama_context_default_params, llama);
+			LINK_DLL_FUNCTION(llama_model_load_from_file, llama);
+			LINK_DLL_FUNCTION(llama_init_from_model, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_init, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_add, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_greedy, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_mirostat_v2, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_temp, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_min_p, llama);
+			LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
+			LINK_DLL_FUNCTION(llama_sampler_sample, llama);
+			LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
+			LINK_DLL_FUNCTION(llama_token_to_piece, llama);
+			LINK_DLL_FUNCTION(llama_batch_get_one, llama);
+			LINK_DLL_FUNCTION(llama_decode, llama);
+			LINK_DLL_FUNCTION(llama_sampler_free, llama);
+			LINK_DLL_FUNCTION(llama_model_free, llama);
+			LINK_DLL_FUNCTION(llama_free, llama);
+			LINK_DLL_FUNCTION(llama_log_set, llama);
+
+			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
+
+			LINK_DLL_FUNCTION(mtmd_context_params_default, mtmd);
+			LINK_DLL_FUNCTION(mtmd_init_from_file, mtmd);
+			LINK_DLL_FUNCTION(mtmd_bitmap_init, mtmd);
+			LINK_DLL_FUNCTION(mtmd_default_marker, mtmd);
+			LINK_DLL_FUNCTION(mtmd_input_chunks_init, mtmd);
+			LINK_DLL_FUNCTION(mtmd_tokenize, mtmd);
+			LINK_DLL_FUNCTION(mtmd_helper_eval_chunks, mtmd);
+			LINK_DLL_FUNCTION(mtmd_input_chunks_free, mtmd);
+			LINK_DLL_FUNCTION(mtmd_bitmap_free, mtmd);
+			LINK_DLL_FUNCTION(mtmd_free, mtmd);
+			LINK_DLL_FUNCTION(mtmd_log_set, mtmd);
+
+			ggml_backend_load_all();
+
+			llama_log_set(llama_callback, nullptr);
+			mtmd_log_set(llama_callback, nullptr);
+
+			llama_model_params model_params = llama_model_default_params();
+			model_params.n_gpu_layers = -1;
+			model_params.progress_callback = my_llama_progress_callback;
+
+			llama_context_params ctx_params = llama_context_default_params();
+			ctx_params.n_ctx = 4096;
+			ctx_params.n_batch = 512;
+
+			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
+			if (model == nullptr)
+			{
+				MessageBoxA(window, llama_logs.c_str(), "llama_model_load_from_file failure", 0);
+				return;
+			}
+
+			llama_context* ctx = llama_init_from_model(model, ctx_params);
+			if (ctx == nullptr)
+			{
+				MessageBoxA(window, llama_logs.c_str(), "llama_init_from_model failure", 0);
+				return;
+			}
+
+			mtmd_context_params mtmd_params = mtmd_context_params_default();
+			mtmd_params.n_threads = 4;
+			mtmd_params.use_gpu = true;
+			mtmd_params.progress_callback = my_llama_progress_callback;
+
+			mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
+			if(ctx_mtmd == nullptr)
+			{
+				MessageBoxA(window, llama_logs.c_str(), "mtmd_init_from_file failure", 0);
+				return;
+			}
+
+			// Convert RGBA -> RGB (mtmd expects RGB24)
+			std::vector<uint8_t> rgb_data(w * h * 3);
+			for (int i = 0; i < w * h; ++i) {
+				rgb_data[i * 3 + 0] = rgba[i * 4 + 0];  // R
+				rgb_data[i * 3 + 1] = rgba[i * 4 + 1];  // G
+				rgb_data[i * 3 + 2] = rgba[i * 4 + 2];  // B
+			}
+			mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
+
+			const char* image_marker = mtmd_default_marker();
+
+			std::string full_text = std::string(image_marker) + prompt;
+
+			mtmd_input_text input_text = {};
+			input_text.text = full_text.c_str();
+			input_text.text_len = full_text.length();
+			input_text.add_special = true;
+			input_text.parse_special = true;
+
+			mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+
+			const mtmd_bitmap* bitmaps[1] = { bitmap };
+
+			if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) != 0)
+			{
+				MessageBoxA(window, llama_logs.c_str(), "mtmd_tokenize failure", 0);
+				return;
+			}
+
+			llama_pos n_past = 0;
+			if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) != 0)
+			{
+				MessageBoxA(window, llama_logs.c_str(), "mtmd_helper_eval_chunks failure", 0);
+				return;
+			}
+
+			llama_sampler_chain_params chain_params = {};
+			llama_sampler* smpl = llama_sampler_chain_init(chain_params); 
+			//llama_sampler_chain_add(smpl, llama_sampler_init_penalties(...));
+			llama_sampler_chain_add(smpl, llama_sampler_init_mirostat_v2(0, 0.1f, 5.0f));
+			llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.78f));
+			llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
+			llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
+			llama_token new_token_id;
+			std::string result_text = "";
+			const struct llama_vocab* vocab = llama_model_get_vocab(model);
+			bool started_generating = false;
+			while (n_past < 1024) {
+				new_token_id = llama_sampler_sample(smpl, ctx, -1);
+
+				if (started_generating && llama_vocab_is_eog(vocab, new_token_id)) {
+					break;
 				}
-				else if (rgba != nullptr)
+
+				char buf[256];
+				int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false);
+
+				if (n > 0) {
+					std::string piece(buf, n);
+
+					// Skip leading whitespace/newlines if we haven't started yet
+					if (!started_generating && (piece == "\n" || piece == " ")) {
+						// continue; // Optional: keep skipping until you hit real text
+					}
+					else {
+						started_generating = true;
+						result_text += piece;
+					}
+				}
+
+				llama_batch batch = llama_batch_get_one(&new_token_id, 1);
+				llama_decode(ctx, batch);
+				n_past += 1;
+			}
+
+			mtmd_input_chunks_free(chunks);
+			mtmd_bitmap_free(bitmap);
+			mtmd_free(ctx_mtmd);
+			llama_sampler_free(smpl);
+			llama_free(ctx);
+			llama_model_free(model);
+
+			int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
+			std::wstring wstr(cnt, 0);
+			MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
+			SetWindowTextW(hEdit, wstr.c_str());
+		}
+		else
+		{
+			// Use stable diffusion library for image generation:
+			_wchdir(L"lib/stable-diffusion");
+
+			int length = GetWindowTextLengthW(hEdit);
+			std::wstring buffer(length, L'\0');
+			GetWindowTextW(hEdit, &buffer[0], length + 1);
+			int utf8len = stbi_convert_wchar_to_utf8(nullptr, 0, buffer.c_str());
+			std::string text(utf8len, '\0');
+			stbi_convert_wchar_to_utf8(text.data(), text.length(), buffer.c_str());
+			SavePrompt(hEdit);
+
+			HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
+			if (stable_diffusion == nullptr)
+			{
+				MessageBoxA(window, "stable_diffusion.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+
+			LINK_DLL_FUNCTION(sd_ctx_params_init, stable_diffusion);
+			LINK_DLL_FUNCTION(new_sd_ctx, stable_diffusion);
+			LINK_DLL_FUNCTION(sd_img_gen_params_init, stable_diffusion);
+			LINK_DLL_FUNCTION(generate_image, stable_diffusion);
+			LINK_DLL_FUNCTION(sd_sample_params_init, stable_diffusion);
+			LINK_DLL_FUNCTION(free_sd_ctx, stable_diffusion);
+			LINK_DLL_FUNCTION(sd_set_log_callback, stable_diffusion);
+			LINK_DLL_FUNCTION(sd_set_progress_callback, stable_diffusion);
+			LINK_DLL_FUNCTION(sd_set_preview_callback, stable_diffusion);
+
+			wchar_t vae_path[MAX_PATH] = {};
+			wchar_t text_encoder_path[MAX_PATH] = {};
+			wchar_t diffusion_model_path[MAX_PATH] = {};
+
+			_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
+			_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+			_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
+
+			char u8_vae_path[MAX_PATH] = {};
+			char u8_text_encoder_path[MAX_PATH] = {};
+			char u8_diffusion_model_path[MAX_PATH] = {};
+
+			stbi_convert_wchar_to_utf8(u8_vae_path, MAX_PATH, vae_path);
+			stbi_convert_wchar_to_utf8(u8_text_encoder_path, MAX_PATH, text_encoder_path);
+			stbi_convert_wchar_to_utf8(u8_diffusion_model_path, MAX_PATH, diffusion_model_path);
+
+			wchar_t models_path[MAX_PATH] = {};
+			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
+			CreateDirectory(models_path, 0);
+			EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
+			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
+			EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
+
+			sd_ctx_params_t sd_params;
+			sd_ctx_params_init(&sd_params);
+			sd_params.vae_path = u8_vae_path;
+			sd_params.llm_path = u8_text_encoder_path;
+			sd_params.diffusion_model_path = u8_diffusion_model_path;
+			sd_params.wtype = SD_TYPE_COUNT;
+			sd_params.n_threads = -1;
+			sd_params.rng_type = STD_DEFAULT_RNG;
+			sd_params.vae_conv_direct = true;
+
+			sd_set_log_callback(sd_log, nullptr);
+			sd_set_progress_callback(sd_callback, nullptr);
+			sd_set_preview_callback(sd_preview, PREVIEW_PROJ, 2, true, false, nullptr);
+
+			sd_ctx_t* sd_ctx = new_sd_ctx(&sd_params);
+			if (sd_ctx != nullptr)
+			{
+				sd_img_gen_params_t img_params;
+				sd_img_gen_params_init(&img_params);
+				img_params.width = w2;
+				img_params.height = h2;
+				img_params.prompt = text.c_str();
+				img_params.strength = 0.0f;
+				img_params.batch_count = 1;
+
+				img_params.vae_tiling_params.enabled = true;
+
+				sd_sample_params_init(&img_params.sample_params);
+				img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+				img_params.sample_params.sample_steps = 8;
+				img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+				img_params.sample_params.eta = 1.0f;
+
+				img_params.sample_params.guidance.txt_cfg = 1.0f;
+				img_params.sample_params.guidance.img_cfg = 1.0f;
+				img_params.sample_params.guidance.distilled_guidance = 3.5f;
+
+				sd_image_t init_img = {};
+				if (mode == MODE_IMAGE_EDIT)
 				{
-					init_img.width = w;
-					init_img.height = h;
-					init_img.channel = 3;
-					init_img.data = (uint8_t*)malloc(w * h * 3);
+					if (rgba2 != nullptr)
+					{
+						init_img.width = w2;
+						init_img.height = h2;
+						init_img.channel = 3;
+						init_img.data = (uint8_t*)malloc(w2 * h2 * 3);
+						for (int i = 0; i < w2 * h2; ++i)
+						{
+							init_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
+							init_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
+							init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
+						}
+						img_params.init_image = init_img;
+						img_params.strength = image_to_image_strength;
+						img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+						img_params.sample_params.sample_steps = image_to_image_steps;
+					}
+					else if (rgba != nullptr)
+					{
+						init_img.width = w;
+						init_img.height = h;
+						init_img.channel = 3;
+						init_img.data = (uint8_t*)malloc(w * h * 3);
+						for (int i = 0; i < w * h; ++i)
+						{
+							init_img.data[i * 3 + 0] = rgba[i * 4 + 0];
+							init_img.data[i * 3 + 1] = rgba[i * 4 + 1];
+							init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
+						}
+						img_params.init_image = init_img;
+						img_params.strength = image_to_image_strength;
+						img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+						img_params.sample_params.sample_steps = image_to_image_steps;
+					}
+				}
+
+				sd_image_t* image = nullptr;
+				int num_images = 1;
+				is_generating.store(true);
+				if (generate_image(sd_ctx, &img_params, &image, &num_images))
+				{
+					w = image->width;
+					h = image->height;
+					if (rgba)
+					{
+						free(rgba);
+						rgba = nullptr;
+					}
+					rgba = (unsigned char*)malloc(w * h * 4);
+					struct Color3 { unsigned char r, g, b; };
+					struct Color4 { unsigned char r, g, b, a; };
 					for (int i = 0; i < w * h; ++i)
 					{
-						init_img.data[i * 3 + 0] = rgba[i * 4 + 0];
-						init_img.data[i * 3 + 1] = rgba[i * 4 + 1];
-						init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
+						const Color3& src = ((Color3*)image->data)[i];
+						Color4& dst = ((Color4*)rgba)[i];
+						dst.r = src.r;
+						dst.g = src.g;
+						dst.b = src.b;
+						dst.a = 255;
 					}
-					img_params.init_image = init_img;
-					img_params.strength = image_to_image_strength;
-					img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
-					img_params.sample_params.sample_steps = image_to_image_steps;
+					push_history(rgba, w, h, true); // save output!
+					redraw();
 				}
+				free_sd_ctx(sd_ctx);
+				if (init_img.data) free(init_img.data);
 			}
-
-			sd_image_t* image = nullptr;
-			int num_images = 1;
-			is_generating.store(true);
-			if (generate_image(sd_ctx, &img_params, &image, &num_images))
-			{
-				w = image->width;
-				h = image->height;
-				if (rgba)
-				{
-					free(rgba);
-					rgba = nullptr;
-				}
-				rgba = (unsigned char*)malloc(w * h * 4);
-				struct Color3 { unsigned char r, g, b; };
-				struct Color4 { unsigned char r, g, b, a; };
-				for (int i = 0; i < w * h; ++i)
-				{
-					const Color3& src = ((Color3*)image->data)[i];
-					Color4& dst = ((Color4*)rgba)[i];
-					dst.r = src.r;
-					dst.g = src.g;
-					dst.b = src.b;
-					dst.a = 255;
-				}
-				push_history(rgba, w, h, true); // save output!
-				redraw();
-			}
-			free_sd_ctx(sd_ctx);
-			if (init_img.data) free(init_img.data);
+			FreeLibrary(stable_diffusion);
 		}
-		FreeLibrary(stable_diffusion);
 
 		// RESTORE WORKING DIRECTORY:
 		_wchdir(originalWorkingDir);
@@ -1303,17 +1541,30 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
 				{
 					HMENU hMenu = CreatePopupMenu();
-					AppendMenuW(hMenu, MF_STRING | (is_edit_mode ? 0 : MF_CHECKED), 101, L"Generate New Image");
-					AppendMenuW(hMenu, MF_STRING | (is_edit_mode ? MF_CHECKED : 0), 102, L"Edit Image");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate New Image");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 103, L"Describe Image");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
 					int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, rc.left, rc.bottom, 0, hWnd, NULL);
 
-					if (selection == 101) is_edit_mode = false;
-					if (selection == 102) is_edit_mode = true;
-
-					SetWindowTextW(hBtnGenerate, is_edit_mode ? L"\u2728 Edit \u2728" : L"\u2728 Generate \u2728");
+					switch (selection)
+					{
+					default:
+					case 101:
+						mode = MODE_IMAGE_GENERATE;
+						SetWindowTextW(hBtnGenerate, L"\u2728 Generate \u2728");
+						break;
+					case 102:
+						mode = MODE_IMAGE_EDIT;
+						SetWindowTextW(hBtnGenerate, L"\u2728 Edit \u2728");
+						break;
+					case 103:
+						mode = MODE_IMAGE_DESCRIBE;
+						SetWindowTextW(hBtnGenerate, L"\u2728 Describe \u2728");
+						break;
+					}
 
 					DestroyMenu(hMenu);
 					return 0;
