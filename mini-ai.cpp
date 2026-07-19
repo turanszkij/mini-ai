@@ -686,8 +686,11 @@ void trigger_generation()
 					++pos;
 				}
 			}
-			SetWindowTextA(hEdit, result_text.c_str());
-			OutputDebugStringA(result_text.c_str());
+			int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
+			std::wstring wstr(cnt, 0);
+			MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
+			SetWindowText(hEdit, wstr.c_str());
+			OutputDebugString(wstr.c_str());
 		}
 		else
 		{
