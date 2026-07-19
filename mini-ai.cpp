@@ -583,6 +583,56 @@ void handle_copy_image(HWND hWnd)
 	}
 }
 
+void handle_paste_image(HWND hWnd) 
+{
+	if (!OpenClipboard(hWnd)) return;
+
+	HANDLE hData = GetClipboardData(CF_DIB);
+	if (!hData) 
+	{
+		CloseClipboard();
+		return;
+	}
+
+	BITMAPINFO* pbi = (BITMAPINFO*)GlobalLock(hData);
+	if (pbi) 
+	{
+		int width = pbi->bmiHeader.biWidth;
+		int height = abs(pbi->bmiHeader.biHeight);
+
+		// Ensure RGBA format
+		unsigned char* pixels = (unsigned char*)malloc(width * height * 4);
+
+		// Simplified extraction (assumes 32-bit DIB)
+		unsigned char* src_bits = (unsigned char*)pbi + pbi->bmiHeader.biSize;
+		for (int y = 0; y < height; y++) 
+		{
+			for (int x = 0; x < width; x++) 
+			{
+				// Clipboard DIB is BGRA
+				pixels[(y * width + x) * 4 + 0] = src_bits[((height - 1 - y) * width + x) * 4 + 2]; // R
+				pixels[(y * width + x) * 4 + 1] = src_bits[((height - 1 - y) * width + x) * 4 + 1]; // G
+				pixels[(y * width + x) * 4 + 2] = src_bits[((height - 1 - y) * width + x) * 4 + 0]; // B
+				pixels[(y * width + x) * 4 + 3] = 255;
+			}
+		}
+		GlobalUnlock(hData);
+
+		if (rgba) free(rgba);
+		if (rgba2) free(rgba2);
+		rgba2 = nullptr;
+		rgba = pixels;
+		w = width; h = height;
+
+		// Resize window to fit
+		RECT rc = { 0, 0, w, h + button_height + text_height };
+		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), FALSE);
+		SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+		redraw();
+	}
+	CloseClipboard();
+}
+
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
 	if (lpCmdLine && lpCmdLine[0])
@@ -749,7 +799,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (rgba == nullptr && !is_generating.load())
 				{
-					const wchar_t* status = L"The image will be generated here.\nYou can also drag and drop an image here to edit.";
+					const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here to edit.";
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hProgressFont = CreateFontW(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
@@ -808,13 +858,34 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						break;
 					}
 				}
-				break;
+				break; 
+			
+			case WM_KEYDOWN:
+			if (wParam == 'V' && (GetKeyState(VK_CONTROL) & 0x8000))
+			{
+				// Only paste image if textbox is NOT in focus
+				if (GetFocus() != hEdit)
+				{
+					handle_paste_image(hWnd);
+				}
+			}
+			break;
 
 			case WM_CONTEXTMENU:
 			{
 				if ((HWND)wParam == window)
 				{
 					HMENU hMenu = CreatePopupMenu();
+
+					// 1. Add Clipboard and Clear actions
+					AppendMenuW(hMenu, MF_STRING, 1099, L"New image");
+					AppendMenuW(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
+					AppendMenuW(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
+
+					// 2. Add Separator
+					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+					// 3. Add Resolution Presets
 					for (int i = 0; i < ARRAYSIZE(presets); ++i)
 						AppendMenuW(hMenu, MF_STRING, 1000 + i, presets[i].name);
 
@@ -822,22 +893,32 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					GetCursorPos(&pt);
 					int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
 
-					selection -= 1000;
-					if (selection >= 0 && selection < ARRAYSIZE(presets))
-					{
-						w2 = presets[selection].w;
-						h2 = presets[selection].h;
-						set_title();
+					// Handle Utility Selection
+					if (selection == 1099) { // New image
+						if (rgba) { free(rgba); rgba = nullptr; }
+						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						redraw();
+					}
+					else if (selection == 1100) { // Copy
+						handle_copy_image(hWnd);
+					}
+					else if (selection == 1101) { // Paste
+						handle_paste_image(hWnd);
+					}
+					// Handle Resolution Selection
+					else {
+						selection -= 1000;
+						if (selection >= 0 && selection < ARRAYSIZE(presets))
+						{
+							w2 = presets[selection].w;
+							h2 = presets[selection].h;
+							set_title();
 
-						// Calculate the new window size based on current text/button height
-						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
-						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-
-						// Resize the window
-						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-
-						// Refresh the drawing
-						if (rgba) redraw();
+							RECT rc = { 0, 0, w2, h2 + button_height + text_height };
+							AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+							SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+							if (rgba) redraw();
+						}
 					}
 
 					DestroyMenu(hMenu);
