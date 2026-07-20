@@ -67,7 +67,8 @@ enum MODE
 	MODE_IMAGE_EDIT,
 	MODE_IMAGE_DESCRIBE,
 	MODE_IMAGE_STORY,
-} static mode = MODE_IMAGE_GENERATE;
+};
+static MODE mode = MODE_IMAGE_GENERATE;
 static wchar_t originalWorkingDir[MAX_PATH];
 static int w = 512, h = 512, c = 3;
 static unsigned char* rgba = nullptr;
