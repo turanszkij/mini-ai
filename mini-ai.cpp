@@ -470,11 +470,6 @@ bool my_llama_progress_callback(float in_progress, void* user_data)
 
 void post_description(std::string result_text)
 {
-	// text can contain leading spaces for some reason:
-	while (!result_text.empty() && result_text.front() == ' ')
-	{
-		result_text.erase(result_text.begin());
-	}
 	// Text line endings should be Windows-like for textbox:
 	size_t pos = 0;
 	while ((pos = result_text.find('\n', pos)) != std::string::npos)
@@ -488,6 +483,17 @@ void post_description(std::string result_text)
 		{
 			++pos;
 		}
+	}
+	// text can contain leading spaces and other stuff for some reason:
+	while (!result_text.empty() &&
+		(
+			result_text.front() == ' ' ||
+			result_text.front() == '\n' ||
+			result_text.front() == '-'
+			)
+		)
+	{
+		result_text.erase(result_text.begin());
 	}
 	int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
 	std::wstring wstr(cnt, 0);
@@ -528,11 +534,13 @@ void trigger_generation()
 			static const char prompt_describe[] =
 				"Describe the image in a natural, descriptive style. "
 				"Do not repeat the description. "
+				"Do not write internal notes. "
 				"Do not use markdown, bullet points, headers, or code blocks.";
 			static const char prompt_story[] =
-				"Create a long-format story based on this image in a natural, descriptive style. "
-				"Focus on events leading up to the moment, describe thoughts and interactions of the characters involved. "
+				"Create a long story based on this image in a natural, descriptive style. "
+				"Describe the scene, occupants, their names, their internal and external monologue and dialogues. "
 				"Do not repeat the description. "
+				"Do not write internal notes. "
 				"Do not use markdown, bullet points, headers, or code blocks.";
 			if (mode == MODE_IMAGE_DESCRIBE)
 			{
@@ -545,8 +553,8 @@ void trigger_generation()
 
 			wchar_t model_path[MAX_PATH] = {};
 			wchar_t mmproj_path[MAX_PATH] = {};
-			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3.5-2B-Q5_K_M.gguf");
-			_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-F16.gguf");
+			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+			_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
 
 			char u8_model_path[MAX_PATH] = {};
 			char u8_mmproj_path[MAX_PATH] = {};
@@ -557,8 +565,8 @@ void trigger_generation()
 			wchar_t models_path[MAX_PATH] = {};
 			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 			CreateDirectory(models_path, 0);
-			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q5_K_M.gguf?download=true", model_path);
-			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-F16.gguf?download=true", mmproj_path);
+			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
+			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
 
 			wchar_t dll_dir[MAX_PATH] = {};
 			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
@@ -643,7 +651,7 @@ void trigger_generation()
 			model_params.progress_callback = my_llama_progress_callback;
 
 			llama_context_params ctx_params = llama_context_default_params();
-			ctx_params.n_ctx = 4096;
+			ctx_params.n_ctx = 8192;
 			ctx_params.n_batch = 512;
 
 			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
@@ -656,6 +664,7 @@ void trigger_generation()
 					mtmd_params.n_threads = 4;
 					mtmd_params.use_gpu = true;
 					mtmd_params.progress_callback = my_llama_progress_callback;
+					mtmd_params.image_min_tokens = 1024; // qwen 3 vl important
 
 					mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
 					if (ctx_mtmd != nullptr && !cancel_request.load())
@@ -703,7 +712,7 @@ void trigger_generation()
 								const struct llama_vocab* vocab = llama_model_get_vocab(model);
 								bool started_generating = false;
 								std::string result_text;
-								while (n_past < 2048 && !cancel_request.load())
+								while (n_past < (llama_pos)ctx_params.n_ctx && !cancel_request.load())
 								{
 									new_token_id = llama_sampler_sample(smpl, ctx, -1);
 
