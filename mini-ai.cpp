@@ -530,7 +530,10 @@ void trigger_generation()
 			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q5_K_M.gguf?download=true", model_path);
 			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-F16.gguf?download=true", mmproj_path);
 
-			_wchdir(L"lib/llama");
+			wchar_t dll_dir[MAX_PATH] = {};
+			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
+			SetDllDirectory(dll_dir);
+
 			HMODULE llama = LoadLibrary(L"llama.dll");
 			if (llama == nullptr)
 			{
@@ -565,6 +568,8 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(llama_sampler_init_temp, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_min_p, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_dist, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_top_k, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_top_p, llama);
 			LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
 			LINK_DLL_FUNCTION(llama_sampler_sample, llama);
 			LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
@@ -574,9 +579,15 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(llama_sampler_free, llama);
 			LINK_DLL_FUNCTION(llama_model_free, llama);
 			LINK_DLL_FUNCTION(llama_free, llama);
+			LINK_DLL_FUNCTION(llama_backend_free, llama);
 			LINK_DLL_FUNCTION(llama_log_set, llama);
 
 			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_unload, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
 
 			LINK_DLL_FUNCTION(mtmd_context_params_default, mtmd);
 			LINK_DLL_FUNCTION(mtmd_init_from_file, mtmd);
@@ -590,7 +601,9 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(mtmd_free, mtmd);
 			LINK_DLL_FUNCTION(mtmd_log_set, mtmd);
 
-			ggml_backend_load_all();
+			char u8_dll_dir[MAX_PATH];
+			stbi_convert_wchar_to_utf8(u8_dll_dir, MAX_PATH, dll_dir);
+			ggml_backend_load_all_from_path(u8_dll_dir);
 
 			llama_log_set(llama_callback, nullptr);
 			mtmd_log_set(llama_callback, nullptr);
@@ -652,12 +665,11 @@ void trigger_generation()
 
 			llama_sampler_chain_params chain_params = {};
 			llama_sampler* smpl = llama_sampler_chain_init(chain_params);
-			llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 			llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
-			//llama_sampler_chain_add(smpl, llama_sampler_init_mirostat_v2(0, 0.1f, 5.0f));
-			//llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.78f));
-			//llama_sampler_chain_add(smpl, llama_sampler_init_min_p(0.05f, 1));
-			llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+			llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+			llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
+			llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.85f));
+			llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
 			llama_token new_token_id;
 			std::string result_text = "";
@@ -701,6 +713,18 @@ void trigger_generation()
 			llama_sampler_free(smpl);
 			llama_free(ctx);
 			llama_model_free(model);
+			llama_backend_free();
+
+			while (true)
+			{
+				size_t n = ggml_backend_reg_count();
+				if (n == 0) break;
+				ggml_backend_reg_t reg = ggml_backend_reg_get(n - 1);
+				if (reg)
+				{
+					ggml_backend_unload(reg);
+				}
+			}
 
 			FreeLibrary(llama);
 			FreeLibrary(ggml);
@@ -720,11 +744,21 @@ void trigger_generation()
 			stbi_convert_wchar_to_utf8(text.data(), text.length(), buffer.c_str());
 			SavePrompt(hEdit);
 
-			_wchdir(L"lib/stable-diffusion");
+			wchar_t dll_dir[MAX_PATH] = {};
+			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/stable-diffusion", originalWorkingDir);
+			SetDllDirectory(dll_dir);
+
 			HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
 			if (stable_diffusion == nullptr)
 			{
 				MessageBoxA(window, "stable_diffusion.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+			HMODULE ggml = LoadLibrary(L"ggml.dll");
+			if (ggml == nullptr)
+			{
+				FreeLibrary(stable_diffusion);
+				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
 				return;
 			}
 
@@ -737,6 +771,17 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(sd_set_log_callback, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_set_progress_callback, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_set_preview_callback, stable_diffusion);
+
+			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_unload, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
+
+			char u8_dll_dir[MAX_PATH];
+			stbi_convert_wchar_to_utf8(u8_dll_dir, MAX_PATH, dll_dir);
+			ggml_backend_load_all_from_path(u8_dll_dir);
 
 			wchar_t vae_path[MAX_PATH] = {};
 			wchar_t text_encoder_path[MAX_PATH] = {};
@@ -867,11 +912,21 @@ void trigger_generation()
 				free_sd_ctx(sd_ctx);
 				if (init_img.data) free(init_img.data);
 			}
-			FreeLibrary(stable_diffusion);
-		}
 
-		// RESTORE WORKING DIRECTORY:
-		_wchdir(originalWorkingDir);
+			while (true)
+			{
+				size_t n = ggml_backend_reg_count();
+				if (n == 0) break;
+				ggml_backend_reg_t reg = ggml_backend_reg_get(n - 1);
+				if (reg)
+				{
+					ggml_backend_unload(reg);
+				}
+			}
+
+			FreeLibrary(stable_diffusion);
+			FreeLibrary(ggml);
+		}
 
 		is_generating.store(false);
 	}).detach();
