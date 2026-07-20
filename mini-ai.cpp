@@ -445,6 +445,33 @@ bool my_llama_progress_callback(float in_progress, void* user_data)
 	return true;
 }
 
+void post_description(std::string result_text)
+{
+	// text can contain leading spaces for some reason:
+	while (!result_text.empty() && result_text.front() == ' ')
+	{
+		result_text.erase(result_text.begin());
+	}
+	// Text line endings should be Windows-like for textbox:
+	size_t pos = 0;
+	while ((pos = result_text.find('\n', pos)) != std::string::npos)
+	{
+		if (pos == 0 || result_text[pos - 1] != '\r')
+		{  // Avoid turning existing \r\n into \r\r\n
+			result_text.insert(pos, 1, '\r');
+			pos += 2;  // Skip past the \r\n we just inserted
+		}
+		else
+		{
+			++pos;
+		}
+	}
+	int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
+	std::wstring wstr(cnt, 0);
+	MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
+	SetWindowText(hEdit, wstr.c_str());
+}
+
 void trigger_generation()
 {
 	if (is_generating.load())
@@ -462,17 +489,17 @@ void trigger_generation()
 			}
 
 			// Use llama library for text generation:
-			_wchdir(L"lib/llama");
 
 			std::string prompt;
 			static const char prompt_describe[] =
-				"Describe the image in a natural, descriptive style."
-				"Do not use markdown, bullet points, headers, or code blocks. "
-				"Focus on sensory details and atmosphere. Do not repeat the description.";
+				"Describe the image in a natural, descriptive style. "
+				"Do not repeat the description. "
+				"Do not use markdown, bullet points, headers, or code blocks.";
 			static const char prompt_story[] =
-				"Create a long-format story based on this image that reads like a book."
-				"Do not use markdown, bullet points, headers, or code blocks. "
-				"Focus on sensory details and atmosphere. Do not repeat the description.";
+				"Create a long-format story based on this image in a natural, descriptive style. "
+				"Focus on events leading up to the moment, describe thoughts and interactions of the characters involved. "
+				"Do not repeat the description. "
+				"Do not use markdown, bullet points, headers, or code blocks.";
 			if (mode == MODE_IMAGE_DESCRIBE)
 			{
 				prompt = prompt_describe;
@@ -499,6 +526,7 @@ void trigger_generation()
 			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q5_K_M.gguf?download=true", model_path);
 			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/mmproj-F16.gguf?download=true", mmproj_path);
 
+			_wchdir(L"lib/llama");
 			HMODULE llama = LoadLibrary(L"llama.dll");
 			if (llama == nullptr)
 			{
@@ -508,12 +536,15 @@ void trigger_generation()
 			HMODULE ggml = LoadLibrary(L"ggml.dll");
 			if (ggml == nullptr)
 			{
+				FreeLibrary(llama);
 				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
 				return;
 			}
 			HMODULE mtmd = LoadLibrary(L"mtmd.dll");
 			if (mtmd == nullptr)
 			{
+				FreeLibrary(llama);
+				FreeLibrary(ggml);
 				MessageBoxA(window, "mtmd.dll couldn't be loaded!", "Error!", 0);
 				return;
 			}
@@ -529,6 +560,7 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(llama_sampler_init_mirostat_v2, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_temp, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_min_p, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_dist, llama);
 			LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
 			LINK_DLL_FUNCTION(llama_sampler_sample, llama);
 			LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
@@ -616,6 +648,7 @@ void trigger_generation()
 
 			llama_sampler_chain_params chain_params = {};
 			llama_sampler* smpl = llama_sampler_chain_init(chain_params);
+			llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 			llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
 			//llama_sampler_chain_add(smpl, llama_sampler_init_mirostat_v2(0, 0.1f, 5.0f));
 			//llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.78f));
@@ -654,6 +687,8 @@ void trigger_generation()
 				llama_batch batch = llama_batch_get_one(&new_token_id, 1);
 				llama_decode(ctx, batch);
 				n_past += 1;
+
+				post_description(result_text);
 			}
 
 			mtmd_input_chunks_free(chunks);
@@ -667,30 +702,7 @@ void trigger_generation()
 			FreeLibrary(ggml);
 			FreeLibrary(mtmd);
 
-			// text can contain leading spaces for some reason:
-			while (!result_text.empty() && result_text.front() == ' ')
-			{
-				result_text.erase(result_text.begin());
-			}
-			// Text line endings should be Windows-like for textbox:
-			size_t pos = 0;
-			while ((pos = result_text.find('\n', pos)) != std::string::npos) 
-			{
-				if (pos == 0 || result_text[pos - 1] != '\r') 
-				{  // Avoid turning existing \r\n into \r\r\n
-					result_text.insert(pos, 1, '\r');
-					pos += 2;  // Skip past the \r\n we just inserted
-				}
-				else 
-				{
-					++pos;
-				}
-			}
-			int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
-			std::wstring wstr(cnt, 0);
-			MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
-			SetWindowText(hEdit, wstr.c_str());
-			OutputDebugString(wstr.c_str());
+			post_description(result_text);
 		}
 		else
 		{
@@ -875,7 +887,7 @@ void handle_load_image(HWND hWnd)
 
 	if (GetOpenFileNameW(&ofn))
 	{
-		char filename[4096] = {};
+		char filename[MAX_PATH] = {};
 		stbi_convert_wchar_to_utf8(filename, sizeof(filename), szFile);
 
 		if (rgba)
@@ -923,7 +935,7 @@ void handle_save_image(HWND hWnd)
 
 	if (GetSaveFileNameW(&ofn))
 	{
-		char filename[4096] = {};
+		char filename[MAX_PATH] = {};
 		stbi_convert_wchar_to_utf8(filename, sizeof(filename), szFile);
 
 		int success = stbi_write_png(filename, w2, h2 - splitter_thickness, 4, rgba2, w2 * 4);
@@ -1012,7 +1024,7 @@ void handle_paste_image(HWND hWnd)
 			{
 				CloseClipboard(); // We have the path, we can close the clipboard now
 
-				char filename[4096] = {};
+				char filename[MAX_PATH] = {};
 				stbi_convert_wchar_to_utf8(filename, sizeof(filename), wfilename);
 
 				int new_w, new_h, new_c;
@@ -1094,7 +1106,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 {
 	if (lpCmdLine && lpCmdLine[0])
 	{
-		char filename[4096] = {};
+		char filename[MAX_PATH] = {};
 		stbi_convert_wchar_to_utf8(filename, sizeof(filename), lpCmdLine);
 		rgba = stbi_load(filename, &w, &h, &c, 4);
 	}
@@ -1488,7 +1500,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						assert(0);
 						continue;
 					}
-					char filename[4096] = {};
+					char filename[MAX_PATH] = {};
 					stbi_convert_wchar_to_utf8(filename, sizeof(filename), wfilename);
 					if (rgba)
 					{
