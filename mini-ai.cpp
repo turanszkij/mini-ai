@@ -106,7 +106,9 @@ void SavePrompt(HWND hEdit) {
 	int length = GetWindowTextLengthW(hEdit);
 	std::wstring buffer(length, L'\0');
 	GetWindowTextW(hEdit, &buffer[0], length + 1);
-	std::wofstream file("prompt.txt");
+	wchar_t path[MAX_PATH] = {};
+	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
+	std::wofstream file(path);
 	if (file.is_open()) 
 	{
 		file << buffer;
@@ -114,7 +116,9 @@ void SavePrompt(HWND hEdit) {
 	}
 }
 void LoadPrompt(HWND hEdit) {
-	std::wifstream file("prompt.txt");
+	wchar_t path[MAX_PATH] = {};
+	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
+	std::wifstream file(path);
 	if (file.is_open()) {
 		std::wstring line;
 		std::getline(file, line);
