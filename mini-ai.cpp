@@ -142,6 +142,26 @@ void set_title()
 	SetWindowText(window, text);
 }
 
+void SetGenerateButtonText()
+{
+	switch (mode)
+	{
+	default:
+	case MODE_IMAGE_GENERATE:
+		SetWindowTextW(hBtnGenerate, L"\u2728 Generate \u2728");
+		break;
+	case MODE_IMAGE_EDIT:
+		SetWindowTextW(hBtnGenerate, L"\u2728 Edit \u2728");
+		break;
+	case MODE_IMAGE_DESCRIBE:
+		SetWindowTextW(hBtnGenerate, L"\u2728 Describe \u2728");
+		break;
+	case MODE_IMAGE_STORY:
+		SetWindowTextW(hBtnGenerate, L"\u2728 Story \u2728");
+		break;
+	}
+}
+
 void EnsureModelExists(const wchar_t* url, const wchar_t* fileName)
 {
 	if (std::filesystem::exists(fileName))
@@ -475,11 +495,29 @@ void post_description(std::string result_text)
 
 void trigger_generation()
 {
+	static std::atomic_bool cancel_request{ false };
+	static sd_ctx_t* sd_ctx = nullptr;
+	using PFN_sd_cancel_generation = decltype(&sd_cancel_generation);
+	static PFN_sd_cancel_generation sd_cancel_generation = nullptr;
+
 	if (is_generating.load())
+	{
+		// When entering this function while generation already running, it acts as a generation cancellation request:
+		cancel_request.store(true);
+		if (sd_ctx != nullptr && sd_cancel_generation != nullptr)
+		{
+			sd_cancel_generation(sd_ctx, SD_CANCEL_ALL);
+		}
 		return;
+	}
+
+	cancel_request.store(false);
 	current_errors.clear();
 
 	std::thread([] {
+		is_generating.store(true);
+		SetWindowText(hBtnGenerate, L"\x23F9 STOP");
+
 		if (mode == MODE_IMAGE_DESCRIBE || mode == MODE_IMAGE_STORY)
 		{
 			if (rgba == nullptr)
@@ -614,101 +652,104 @@ void trigger_generation()
 			ctx_params.n_batch = 512;
 
 			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
-			if (model == nullptr)
-				return;
-
-			llama_context* ctx = llama_init_from_model(model, ctx_params);
-			if (ctx == nullptr)
-				return;
-
-			mtmd_context_params mtmd_params = mtmd_context_params_default();
-			mtmd_params.n_threads = 4;
-			mtmd_params.use_gpu = true;
-			mtmd_params.progress_callback = my_llama_progress_callback;
-
-			mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
-			if(ctx_mtmd == nullptr)
-				return;
-
-			// Convert RGBA -> RGB (mtmd expects RGB24)
-			std::vector<uint8_t> rgb_data(w * h * 3);
-			for (int i = 0; i < w * h; ++i) {
-				rgb_data[i * 3 + 0] = rgba[i * 4 + 0];  // R
-				rgb_data[i * 3 + 1] = rgba[i * 4 + 1];  // G
-				rgb_data[i * 3 + 2] = rgba[i * 4 + 2];  // B
-			}
-			mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
-
-			const char* image_marker = mtmd_default_marker();
-
-			std::string full_text = std::string(image_marker) + prompt;
-
-			mtmd_input_text input_text = {};
-			input_text.text = full_text.c_str();
-			input_text.text_len = full_text.length();
-			input_text.add_special = true;
-			input_text.parse_special = true;
-
-			mtmd_input_chunks* chunks = mtmd_input_chunks_init();
-
-			const mtmd_bitmap* bitmaps[1] = { bitmap };
-
-			if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) != 0)
-				return;
-
-			llama_pos n_past = 0;
-			if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) != 0)
-				return;
-
-			llama_sampler_chain_params chain_params = {};
-			llama_sampler* smpl = llama_sampler_chain_init(chain_params);
-			llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
-			llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
-			llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
-			llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.85f));
-			llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-
-			llama_token new_token_id;
-			std::string result_text = "";
-			const struct llama_vocab* vocab = llama_model_get_vocab(model);
-			bool started_generating = false;
-			while (n_past < 2048) 
+			if (model != nullptr && !cancel_request.load())
 			{
-				new_token_id = llama_sampler_sample(smpl, ctx, -1);
+				llama_context* ctx = llama_init_from_model(model, ctx_params);
+				if (ctx != nullptr && !cancel_request.load())
+				{
+					mtmd_context_params mtmd_params = mtmd_context_params_default();
+					mtmd_params.n_threads = 4;
+					mtmd_params.use_gpu = true;
+					mtmd_params.progress_callback = my_llama_progress_callback;
 
-				if (started_generating && llama_vocab_is_eog(vocab, new_token_id))
-					break;
-
-				char buf[256];
-				int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false);
-
-				if (n > 0) {
-					std::string piece(buf, n);
-
-					// Skip leading whitespace/newlines if we haven't started yet
-					if (!started_generating && (piece == "\n" || piece == " ")) 
+					mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
+					if (ctx_mtmd != nullptr && !cancel_request.load())
 					{
-						// continue; // Optional: keep skipping until you hit real text
+						// Convert RGBA -> RGB
+						std::vector<uint8_t> rgb_data(w * h * 3);
+						for (int i = 0; i < w * h; ++i) {
+							rgb_data[i * 3 + 0] = rgba[i * 4 + 0];
+							rgb_data[i * 3 + 1] = rgba[i * 4 + 1];
+							rgb_data[i * 3 + 2] = rgba[i * 4 + 2];
+						}
+						mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
+
+						const char* image_marker = mtmd_default_marker();
+
+						std::string full_text = std::string(image_marker) + prompt;
+
+						mtmd_input_text input_text = {};
+						input_text.text = full_text.c_str();
+						input_text.text_len = full_text.length();
+						input_text.add_special = true;
+						input_text.parse_special = true;
+
+						mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+
+						const mtmd_bitmap* bitmaps[1] = { bitmap };
+
+						if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) == 0)
+						{
+							llama_pos n_past = 0;
+							if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) == 0)
+							{
+								llama_sampler_chain_params chain_params = {};
+								llama_sampler* smpl = llama_sampler_chain_init(chain_params);
+								llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
+								llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+								llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
+								llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.85f));
+								llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+								llama_token new_token_id;
+								const struct llama_vocab* vocab = llama_model_get_vocab(model);
+								bool started_generating = false;
+								std::string result_text;
+								while (n_past < 2048 && !cancel_request.load())
+								{
+									new_token_id = llama_sampler_sample(smpl, ctx, -1);
+
+									if (started_generating && llama_vocab_is_eog(vocab, new_token_id))
+										break;
+
+									char buf[256];
+									int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false);
+
+									if (n > 0) {
+										std::string piece(buf, n);
+
+										// Skip leading whitespace/newlines if we haven't started yet
+										if (!started_generating && (piece == "\n" || piece == " "))
+										{
+											// continue; // Optional: keep skipping until you hit real text
+										}
+										else
+										{
+											started_generating = true;
+											result_text += piece;
+										}
+									}
+
+									llama_batch batch = llama_batch_get_one(&new_token_id, 1);
+									llama_decode(ctx, batch);
+									n_past += 1;
+
+									post_description(result_text);
+								}
+
+								post_description(result_text);
+
+								llama_sampler_free(smpl);
+							}
+						}
+						mtmd_input_chunks_free(chunks);
+						mtmd_bitmap_free(bitmap);
 					}
-					else 
-					{
-						started_generating = true;
-						result_text += piece;
-					}
+					mtmd_free(ctx_mtmd);
 				}
-
-				llama_batch batch = llama_batch_get_one(&new_token_id, 1);
-				llama_decode(ctx, batch);
-				n_past += 1;
-
-				post_description(result_text);
+				llama_free(ctx);
 			}
 
-			mtmd_input_chunks_free(chunks);
-			mtmd_bitmap_free(bitmap);
-			mtmd_free(ctx_mtmd);
-			llama_sampler_free(smpl);
-			llama_free(ctx);
 			llama_model_free(model);
 			llama_backend_free();
 
@@ -726,8 +767,6 @@ void trigger_generation()
 			FreeLibrary(llama);
 			FreeLibrary(ggml);
 			FreeLibrary(mtmd);
-
-			post_description(result_text);
 		}
 		else
 		{
@@ -768,6 +807,7 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(sd_set_log_callback, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_set_progress_callback, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_set_preview_callback, stable_diffusion);
+			sd_cancel_generation = (PFN_sd_cancel_generation)GetProcAddress(stable_diffusion, "sd_cancel_generation");
 
 			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
 			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
@@ -817,7 +857,7 @@ void trigger_generation()
 			sd_set_progress_callback(sd_callback, nullptr);
 			sd_set_preview_callback(sd_preview, PREVIEW_PROJ, 2, true, false, nullptr);
 
-			sd_ctx_t* sd_ctx = new_sd_ctx(&sd_params);
+			sd_ctx = new_sd_ctx(&sd_params);
 			if (sd_ctx != nullptr)
 			{
 				sd_img_gen_params_t img_params;
@@ -881,7 +921,6 @@ void trigger_generation()
 
 				sd_image_t* image = nullptr;
 				int num_images = 1;
-				is_generating.store(true);
 				if (generate_image(sd_ctx, &img_params, &image, &num_images))
 				{
 					w = image->width;
@@ -904,7 +943,6 @@ void trigger_generation()
 						dst.a = 255;
 					}
 					push_history(rgba, w, h, true); // save output!
-					redraw();
 				}
 				free_sd_ctx(sd_ctx);
 				if (init_img.data) free(init_img.data);
@@ -926,6 +964,10 @@ void trigger_generation()
 		}
 
 		is_generating.store(false);
+		sd_ctx = nullptr;
+		progress = 0;
+		SetGenerateButtonText();
+		redraw();
 	}).detach();
 }
 
@@ -1664,21 +1706,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					default:
 					case 101:
 						mode = MODE_IMAGE_GENERATE;
-						SetWindowTextW(hBtnGenerate, L"\u2728 Generate \u2728");
 						break;
 					case 102:
 						mode = MODE_IMAGE_EDIT;
-						SetWindowTextW(hBtnGenerate, L"\u2728 Edit \u2728");
 						break;
 					case 103:
 						mode = MODE_IMAGE_DESCRIBE;
-						SetWindowTextW(hBtnGenerate, L"\u2728 Describe \u2728");
 						break;
 					case 104:
 						mode = MODE_IMAGE_STORY;
-						SetWindowTextW(hBtnGenerate, L"\u2728 Story \u2728");
 						break;
 					}
+
+					SetGenerateButtonText();
 
 					DestroyMenu(hMenu);
 					return 0;
