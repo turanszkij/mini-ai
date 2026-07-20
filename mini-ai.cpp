@@ -522,13 +522,6 @@ void trigger_generation()
 
 		if (mode == MODE_IMAGE_DESCRIBE || mode == MODE_IMAGE_STORY)
 		{
-			if (rgba == nullptr)
-			{
-				current_errors = "There is no image to describe!";
-				redraw();
-				return;
-			}
-
 			// Use llama library for text generation:
 
 			std::string prompt;
@@ -669,10 +662,13 @@ void trigger_generation()
 					{
 						// Convert RGBA -> RGB
 						std::vector<uint8_t> rgb_data(w * h * 3);
-						for (int i = 0; i < w * h; ++i) {
-							rgb_data[i * 3 + 0] = rgba[i * 4 + 0];
-							rgb_data[i * 3 + 1] = rgba[i * 4 + 1];
-							rgb_data[i * 3 + 2] = rgba[i * 4 + 2];
+						if (rgba)
+						{
+							for (int i = 0; i < w * h; ++i) {
+								rgb_data[i * 3 + 0] = rgba[i * 4 + 0];
+								rgb_data[i * 3 + 1] = rgba[i * 4 + 1];
+								rgb_data[i * 3 + 2] = rgba[i * 4 + 2];
+							}
 						}
 						mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
 
@@ -1055,7 +1051,6 @@ void handle_copy_image(HWND hWnd)
 		return;
 	}
 
-	// Calculate sizing for true Clipboard DIB representation
 	size_t row_stride = w2 * 4;
 	size_t image_size = row_stride * draw_height;
 	size_t total_size = sizeof(BITMAPINFOHEADER) + image_size;
@@ -1094,7 +1089,6 @@ void handle_copy_image(HWND hWnd)
 		}
 		GlobalUnlock(hClipboardData);
 
-		// Commit directly to OS environment pipeline loop
 		if (OpenClipboard(hWnd))
 		{
 			EmptyClipboard();
@@ -1112,17 +1106,15 @@ void handle_paste_image(HWND hWnd)
 {
 	if (!OpenClipboard(hWnd)) return;
 
-	// 1. Check if the clipboard contains copied files (e.g., from Desktop/Explorer)
 	if (IsClipboardFormatAvailable(CF_HDROP))
 	{
 		HANDLE hDrop = GetClipboardData(CF_HDROP);
 		if (hDrop)
 		{
 			wchar_t wfilename[MAX_PATH] = {};
-			// Grab the first file path copied to the clipboard
 			if (DragQueryFileW((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
 			{
-				CloseClipboard(); // We have the path, we can close the clipboard now
+				CloseClipboard();
 
 				char filename[MAX_PATH] = {};
 				WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
@@ -1141,18 +1133,16 @@ void handle_paste_image(HWND hWnd)
 
 					push_history(rgba, w, h);
 
-					// Resize window to fit the new image
 					RECT rc = { 0, 0, w, h + button_height + text_height };
 					AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
 					SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 					redraw();
 				}
-				return; // Exit here so we don't proceed to the DIB check
+				return;
 			}
 		}
 	}
 
-	// 2. Fallback to checking for raw image data (e.g., from MS Paint or Photo Viewer)
 	HANDLE hData = GetClipboardData(CF_DIB);
 	if (!hData)
 	{
@@ -1193,7 +1183,6 @@ void handle_paste_image(HWND hWnd)
 
 		push_history(rgba, w, h);
 
-		// Resize window to fit
 		RECT rc = { 0, 0, w, h + button_height + text_height };
 		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
 		SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
@@ -1271,7 +1260,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				else
 				{
 					// Checkerboard
-					int cellSize = 20;
+					const int cellSize = 32;
 					COLORREF color1 = RGB(35, 35, 35);
 					COLORREF color2 = RGB(25, 25, 25);
 
@@ -1455,8 +1444,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if ((HWND)wParam == window)
 				{
 					HMENU hMenu = CreatePopupMenu();
-
-					// 1. Add Clipboard and Clear actions
 					AppendMenuW(hMenu, MF_STRING, 1099, L"New image");
 					AppendMenuW(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
 					AppendMenuW(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
@@ -1465,10 +1452,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING, 1104, L"200%");
 					AppendMenuW(hMenu, MF_STRING, 1105, L"400%");
 
-					// 2. Add Separator
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
-					// 3. Add Resolution Presets
 					for (int i = 0; i < ARRAYSIZE(presets); ++i)
 						AppendMenuW(hMenu, MF_STRING, 1000 + i, presets[i].name);
 
@@ -1476,7 +1461,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					GetCursorPos(&pt);
 					int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
 
-					// Handle Utility Selection
 					if (selection == 1099) { // New image
 						if (rgba) { free(rgba); rgba = nullptr; }
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
@@ -1535,8 +1519,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						if (rgba) redraw();
 						redraw();
 					}
-					// Handle Resolution Selection
-					else {
+					else { // resolution selection
 						selection -= 1000;
 						if (selection >= 0 && selection < ARRAYSIZE(presets))
 						{
@@ -1754,7 +1737,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	wcex.lpszMenuName = NULL;
 	wcex.lpszClassName = L"mini-ai";
 	wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
-	wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON)); // Small icon (taskbar)
+	wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
 	RegisterClassExW(&wcex);
 
 	RECT wr = { 0, 0, w, h + text_height + button_height };
@@ -1766,7 +1749,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	window = CreateWindowW(L"mini-ai", L"mini-ai", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, window_width, window_height, nullptr, nullptr, NULL, nullptr);
 	hEdit = CreateWindowW(L"EDIT", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL, 0, 0, 0, 0, window, NULL, hInstance, NULL);
 
-	// Create UI Button Controls matching native modern font layouts
 	hBtnLoad = CreateWindowW(L"BUTTON", L"\xE8B7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_LOAD_BUTTON, hInstance, NULL);
 	hBtnSave = CreateWindowW(L"BUTTON", L"\xE74E", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_SAVE_BUTTON, hInstance, NULL);
 	hBtnCopy = CreateWindowW(L"BUTTON", L"\xE8C8", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_COPY_BUTTON, hInstance, NULL);
@@ -1778,7 +1760,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	HFONT hFont = CreateFont(34, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
 	SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-	// Create structural asset mapping definitions for MDL2 system icons
 	HFONT hIconFont = CreateFontW(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
 	SendMessageW(hBtnLoad, WM_SETFONT, (WPARAM)hIconFont, TRUE);
 	SendMessageW(hBtnSave, WM_SETFONT, (WPARAM)hIconFont, TRUE);
@@ -1813,10 +1794,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	using fnSetPreferredAppMode = PreferredAppMode(WINAPI*)(PreferredAppMode appMode);
 	using fnAllowDarkModeForWindow = bool(WINAPI*)(HWND hWnd, bool allow);
 
-	// Force Dark Mode context rules to frame structures
 	BOOL darkmode = TRUE;
 	DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkmode, sizeof(darkmode));
-
 	SetWindowTheme(hBtnLoad, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnSave, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hBtnCopy, L"DarkMode_Explorer", NULL);
