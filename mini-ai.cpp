@@ -56,7 +56,6 @@
 // Shortcut Command IDs
 #define ID_ACCEL_LOAD     201
 #define ID_ACCEL_SAVE     202
-#define ID_ACCEL_COPY     203
 #define ID_ACCEL_GENERATE 204
 
 #define IDI_APPICON 101
@@ -75,9 +74,9 @@ static unsigned char* rgba = nullptr;
 static unsigned char* rgba2 = nullptr;
 static int w2, h2;
 static int text_height = 100;
-static const int button_height = 45; // Height of the bottom row
-static bool is_dragging = false; // Tracks if we are currently resizing the textbox
-const int splitter_thickness = 6; // Hit-test thickness for dragging
+static const int button_height = 45;
+static bool is_dragging = false; // separator dragging
+const int splitter_thickness = 6; // image/textbox separator thickness
 static int progress = 0;
 static std::atomic_bool is_generating{ false };
 static std::wstring current_download;
@@ -100,7 +99,8 @@ struct Res { int w, h; const wchar_t* name; };
 Res presets[] = { {512, 512, L"512x512"}, {1024, 1024, L"1024x1024"}, {640, 480, L"640x480"}, {800, 600, L"800x600"}, {1280, 720, L"1280x720"}, {1920, 1080, L"1920x1080"}, {480, 640, L"480x640"}, {960, 1280, L"960x1280"} };
 
 
-void SavePrompt(HWND hEdit) {
+void SavePrompt(HWND hEdit) 
+{
 	int length = GetWindowTextLengthW(hEdit);
 	std::wstring buffer(length, L'\0');
 	GetWindowTextW(hEdit, &buffer[0], length + 1);
@@ -113,7 +113,8 @@ void SavePrompt(HWND hEdit) {
 		file.close();
 	}
 }
-void LoadPrompt(HWND hEdit) {
+void LoadPrompt(HWND hEdit) 
+{
 	wchar_t path[MAX_PATH] = {};
 	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
 	std::wifstream file(path);
@@ -123,8 +124,8 @@ void LoadPrompt(HWND hEdit) {
 		SetWindowTextW(hEdit, line.c_str());
 		file.close();
 	}
-	else {
-		// default if file doesn't exist
+	else 
+	{
 		SetWindowTextW(hEdit, L"A beautiful mountain landscape...");
 	}
 }
@@ -557,8 +558,8 @@ void trigger_generation()
 			char u8_model_path[MAX_PATH] = {};
 			char u8_mmproj_path[MAX_PATH] = {};
 
-			stbi_convert_wchar_to_utf8(u8_model_path, MAX_PATH, model_path);
-			stbi_convert_wchar_to_utf8(u8_mmproj_path, MAX_PATH, mmproj_path);
+			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
 
 			wchar_t models_path[MAX_PATH] = {};
 			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
@@ -638,7 +639,7 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(mtmd_log_set, mtmd);
 
 			char u8_dll_dir[MAX_PATH];
-			stbi_convert_wchar_to_utf8(u8_dll_dir, MAX_PATH, dll_dir);
+			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
 			ggml_backend_load_all_from_path(u8_dll_dir);
 
 			llama_log_set(llama_callback, nullptr);
@@ -776,9 +777,9 @@ void trigger_generation()
 			int length = GetWindowTextLengthW(hEdit);
 			std::wstring buffer(length, L'\0');
 			GetWindowTextW(hEdit, &buffer[0], length + 1);
-			int utf8len = stbi_convert_wchar_to_utf8(nullptr, 0, buffer.c_str());
+			int utf8len = WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, nullptr, 0, nullptr, nullptr);
 			std::string text(utf8len, '\0');
-			stbi_convert_wchar_to_utf8(text.data(), text.length(), buffer.c_str());
+			WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, text.data(), (int)text.length(), nullptr, nullptr);
 			SavePrompt(hEdit);
 
 			wchar_t dll_dir[MAX_PATH] = {};
@@ -818,7 +819,7 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
 
 			char u8_dll_dir[MAX_PATH];
-			stbi_convert_wchar_to_utf8(u8_dll_dir, MAX_PATH, dll_dir);
+			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
 			ggml_backend_load_all_from_path(u8_dll_dir);
 
 			wchar_t vae_path[MAX_PATH] = {};
@@ -833,9 +834,9 @@ void trigger_generation()
 			char u8_text_encoder_path[MAX_PATH] = {};
 			char u8_diffusion_model_path[MAX_PATH] = {};
 
-			stbi_convert_wchar_to_utf8(u8_vae_path, MAX_PATH, vae_path);
-			stbi_convert_wchar_to_utf8(u8_text_encoder_path, MAX_PATH, text_encoder_path);
-			stbi_convert_wchar_to_utf8(u8_diffusion_model_path, MAX_PATH, diffusion_model_path);
+			WideCharToMultiByte(CP_UTF8, 0, vae_path, -1, u8_vae_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, text_encoder_path, -1, u8_text_encoder_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, diffusion_model_path, -1, u8_diffusion_model_path, MAX_PATH, nullptr, nullptr);
 
 			wchar_t models_path[MAX_PATH] = {};
 			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
@@ -987,7 +988,7 @@ void handle_load_image(HWND hWnd)
 	if (GetOpenFileNameW(&ofn))
 	{
 		char filename[MAX_PATH] = {};
-		stbi_convert_wchar_to_utf8(filename, sizeof(filename), szFile);
+		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
 
 		if (rgba)
 		{
@@ -1035,7 +1036,7 @@ void handle_save_image(HWND hWnd)
 	if (GetSaveFileNameW(&ofn))
 	{
 		char filename[MAX_PATH] = {};
-		stbi_convert_wchar_to_utf8(filename, sizeof(filename), szFile);
+		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
 
 		int success = stbi_write_png(filename, w2, h2 - splitter_thickness, 4, rgba2, w2 * 4);
 		if (!success)
@@ -1117,14 +1118,14 @@ void handle_paste_image(HWND hWnd)
 		HANDLE hDrop = GetClipboardData(CF_HDROP);
 		if (hDrop)
 		{
-			wchar_t wfilename[1024] = {};
+			wchar_t wfilename[MAX_PATH] = {};
 			// Grab the first file path copied to the clipboard
 			if (DragQueryFileW((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
 			{
 				CloseClipboard(); // We have the path, we can close the clipboard now
 
 				char filename[MAX_PATH] = {};
-				stbi_convert_wchar_to_utf8(filename, sizeof(filename), wfilename);
+				WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
 
 				int new_w, new_h, new_c;
 				unsigned char* new_rgba = stbi_load(filename, &new_w, &new_h, &new_c, 4);
@@ -1203,13 +1204,6 @@ void handle_paste_image(HWND hWnd)
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
-	if (lpCmdLine && lpCmdLine[0])
-	{
-		char filename[MAX_PATH] = {};
-		stbi_convert_wchar_to_utf8(filename, sizeof(filename), lpCmdLine);
-		rgba = stbi_load(filename, &w, &h, &c, 4);
-	}
-
 	_wgetcwd(originalWorkingDir, MAX_PATH); // save original working dir at startup
 
 	static bool exiting = false;
@@ -1416,7 +1410,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						handle_save_image(hWnd);
 						break;
 					case IDC_COPY_BUTTON:
-					case ID_ACCEL_COPY:
 						handle_copy_image(hWnd);
 						break; 
 					case IDC_CLEAR_BUTTON:
@@ -1598,7 +1591,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						continue;
 					}
 					char filename[MAX_PATH] = {};
-					stbi_convert_wchar_to_utf8(filename, sizeof(filename), wfilename);
+					WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
 					if (rgba)
 					{
 						free(rgba);
@@ -1839,7 +1832,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	ACCEL accels[] = {
 		{ FCONTROL | FVIRTKEY, 'O', ID_ACCEL_LOAD },
 		{ FCONTROL | FVIRTKEY, 'S', ID_ACCEL_SAVE },
-		{ FCONTROL | FVIRTKEY, 'C', ID_ACCEL_COPY },
 		{ FCONTROL | FVIRTKEY, VK_RETURN, ID_ACCEL_GENERATE }
 	};
 	HACCEL hAccel = CreateAcceleratorTableW(accels, ARRAYSIZE(accels));
