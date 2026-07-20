@@ -24,8 +24,8 @@ jobs:
       shell: cmd
       run: |
         move x64\Release\mini-ai.exe .\
-        move lib\llama\*.dll .\
-        move lib\stable-diffusion\*.dll .\
+        move lib\llama\*.dll .\lib\llama\
+        move lib\stable-diffusion\*.dll .\lib\stable-diffusion\
 
     - name: Package
       uses: actions/upload-artifact@v4
