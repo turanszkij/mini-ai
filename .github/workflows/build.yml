@@ -24,7 +24,8 @@ jobs:
       shell: cmd
       run: |
         move x64\Release\mini-ai.exe .\
-        robocopy lib . *.dll /s /mov
+        move lib\llama\*.dll .\
+        move lib\stable-diffusion\*.dll .\
 
     - name: Package
       uses: actions/upload-artifact@v4
