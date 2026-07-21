@@ -69,15 +69,15 @@ enum MODE
 };
 static MODE mode = MODE_IMAGE_GENERATE;
 static wchar_t originalWorkingDir[MAX_PATH];
-static int w = 512, h = 512, c = 3;
-static unsigned char* rgba = nullptr;
-static unsigned char* rgba2 = nullptr;
-static int w2, h2;
-static int text_height = 100;
-static const int button_height = 45;
+static int w = 512, h = 512, c = 3; // properties of the current image
+static unsigned char* rgba = nullptr; // byte data of current image
+static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version
+static int w2, h2; // properties of the current image's scaled version
+static int text_height = 180; // textbox input height
+static const int button_height = 45; // height of all the buttons on the bottom row
 static bool is_dragging = false; // separator dragging
 const int splitter_thickness = 6; // image/textbox separator thickness
-static int progress = 0;
+static int progress = 0; // progress of current processing task
 static std::atomic_bool is_generating{ false };
 static std::wstring current_download;
 static std::string current_errors;
@@ -91,20 +91,21 @@ static HWND hBtnGenerate = nullptr;
 static HWND hBtnUndo = nullptr;
 static HWND hBtnRedo = nullptr;
 
+// TODO Not sure these params are best for image edit
 static float image_to_image_strength = 0.32f;
-static float image_to_image_txt_cfg = 2.0f;
-static int image_to_image_steps = 20;
+static float image_to_image_txt_cfg = 4.0f;
+static int image_to_image_steps = 8;
 
 struct ResolutionPreset { int w, h; };
 static const ResolutionPreset resolution_presets[] = {
-	{512, 512}, 
-	{1024, 1024}, 
-	{640, 480}, 
-	{800, 600}, 
-	{1280, 720}, 
-	{1920, 1080}, 
-	{480, 640}, 
-	{960, 1280} 
+	{512, 512},
+	{1024, 1024},
+	{640, 480},
+	{800, 600},
+	{1280, 720},
+	{1920, 1080},
+	{480, 640},
+	{960, 1280}
 };
 
 
@@ -903,8 +904,7 @@ void trigger_generation()
 				img_params.prompt = text.c_str();
 				img_params.strength = 0.0f;
 				img_params.batch_count = 1;
-
-				img_params.vae_tiling_params.enabled = true;
+				img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
 
 				sd_sample_params_init(&img_params.sample_params);
 				img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
