@@ -95,8 +95,17 @@ static float image_to_image_strength = 0.32f;
 static float image_to_image_txt_cfg = 2.0f;
 static int image_to_image_steps = 20;
 
-struct Res { int w, h; const wchar_t* name; };
-Res presets[] = { {512, 512, L"512x512"}, {1024, 1024, L"1024x1024"}, {640, 480, L"640x480"}, {800, 600, L"800x600"}, {1280, 720, L"1280x720"}, {1920, 1080, L"1920x1080"}, {480, 640, L"480x640"}, {960, 1280, L"960x1280"} };
+struct ResolutionPreset { int w, h; };
+static const ResolutionPreset resolution_presets[] = {
+	{512, 512}, 
+	{1024, 1024}, 
+	{640, 480}, 
+	{800, 600}, 
+	{1280, 720}, 
+	{1920, 1080}, 
+	{480, 640}, 
+	{960, 1280} 
+};
 
 
 void SavePrompt(HWND hEdit) 
@@ -490,6 +499,17 @@ bool my_llama_progress_callback(float in_progress, void* user_data)
 
 void post_description(std::string result_text)
 {
+	// text can contain leading spaces and other stuff for some reason:
+	while (!result_text.empty() &&
+		(
+			result_text.front() == ' ' ||
+			result_text.front() == '\n' ||
+			result_text.front() == '-'
+			)
+		)
+	{
+		result_text.erase(result_text.begin());
+	}
 	// Text line endings should be Windows-like for textbox:
 	size_t pos = 0;
 	while ((pos = result_text.find('\n', pos)) != std::string::npos)
@@ -503,17 +523,6 @@ void post_description(std::string result_text)
 		{
 			++pos;
 		}
-	}
-	// text can contain leading spaces and other stuff for some reason:
-	while (!result_text.empty() &&
-		(
-			result_text.front() == ' ' ||
-			result_text.front() == '\n' ||
-			result_text.front() == '-'
-			)
-		)
-	{
-		result_text.erase(result_text.begin());
 	}
 	int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
 	std::wstring wstr(cnt, 0);
@@ -1483,8 +1492,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
-					for (int i = 0; i < ARRAYSIZE(presets); ++i)
-						AppendMenuW(hMenu, MF_STRING, 1000 + i, presets[i].name);
+					for (int i = 0; i < ARRAYSIZE(resolution_presets); ++i)
+					{
+						wchar_t restext[32] = {};
+						_snwprintf(restext, ARRAYSIZE(restext), L"%dx%d", resolution_presets[i].w, resolution_presets[i].h);
+						AppendMenuW(hMenu, MF_STRING, 1000 + i, restext);
+					}
 
 					POINT pt;
 					GetCursorPos(&pt);
@@ -1493,6 +1506,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					if (selection == 1099) { // New image
 						if (rgba) { free(rgba); rgba = nullptr; }
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						push_history(nullptr, w, h);
 						redraw();
 					}
 					else if (selection == 1100) { // Copy
@@ -1550,10 +1564,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					}
 					else { // resolution selection
 						selection -= 1000;
-						if (selection >= 0 && selection < ARRAYSIZE(presets))
+						if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
 						{
-							w2 = presets[selection].w;
-							h2 = presets[selection].h;
+							w2 = resolution_presets[selection].w;
+							h2 = resolution_presets[selection].h;
 							set_title();
 
 							RECT rc = { 0, 0, w2, h2 + button_height + text_height };
