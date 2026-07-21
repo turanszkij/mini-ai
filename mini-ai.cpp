@@ -119,9 +119,21 @@ void LoadPrompt(HWND hEdit)
 	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
 	std::wifstream file(path);
 	if (file.is_open()) {
+		std::wstring content;
 		std::wstring line;
-		std::getline(file, line);
-		SetWindowTextW(hEdit, line.c_str());
+		while (std::getline(file, line)) 
+		{
+			content += line + L"\r\n";
+		}
+		if (!content.empty() && content.back() == L'\n') 
+		{
+			content.pop_back();
+			if (!content.empty() && content.back() == L'\r') 
+			{
+				content.pop_back();
+			}
+		}
+		SetWindowTextW(hEdit, content.c_str());
 		file.close();
 	}
 	else 
