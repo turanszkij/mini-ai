@@ -297,10 +297,12 @@ void redraw()
 }
 
 
-struct HistoryEntry {
+struct HistoryEntry 
+{
 	unsigned char* data;
 	int size;
 	int w, h;
+	std::wstring prompt;
 };
 static std::vector<HistoryEntry> history;
 static int history_index = -1;
@@ -347,7 +349,11 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 		history_index--;
 	}
 
-	history.push_back({ png_data, out_size, width, height });
+	int length = GetWindowTextLengthW(hEdit);
+	std::wstring buffer(length, L'\0');
+	GetWindowTextW(hEdit, &buffer[0], length + 1);
+
+	history.push_back({ png_data, out_size, width, height, buffer });
 	history_index++;
 
 	if (save_output && png_data != nullptr)
@@ -394,6 +400,8 @@ void load_history_entry()
 			w = w_temp;
 			h = h_temp;
 		}
+
+		SetWindowText(hEdit, history[history_index].prompt.c_str());
 	}
 
 	redraw();
