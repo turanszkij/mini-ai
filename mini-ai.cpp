@@ -14,12 +14,24 @@
 #include <wininet.h>
 #pragma comment(lib, "wininet.lib")
 
+#include <wrl/client.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <mferror.h>
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mfreadwrite.lib")
+#pragma comment(lib, "mfuuid.lib")
+
 #include <thread>
 #include <string>
 #include <fstream>
 #include <atomic>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
+#include <iomanip>
+#include <iostream>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_WINDOWS_UTF8
@@ -108,7 +120,6 @@ static const ResolutionPreset resolution_presets[] = {
 	{480, 640},
 	{960, 1280}
 };
-
 
 void SavePrompt(HWND hEdit) 
 {
@@ -908,7 +919,7 @@ void trigger_generation()
 			sd_params.n_threads = -1;
 			sd_params.rng_type = STD_DEFAULT_RNG;
 			sd_params.vae_conv_direct = true;
-			sd_params.flash_attn = true;
+			//sd_params.flash_attn = true;
 			if (mode == MODE_IMAGE_VIDEO)
 			{
 				//sd_params.prediction = FLOW_PRED;
@@ -938,8 +949,8 @@ void trigger_generation()
 					vid_params.height = 256;
 					vid_params.prompt = text.c_str();
 
-					vid_params.video_frames = 9; // e.g. 17, 25, 33, 49, 81
 					vid_params.fps = 24;
+					vid_params.video_frames = vid_params.fps + 1; // e.g. 17, 25, 33, 49, 81
 
 					vid_params.strength = 0.5f;
 					vid_params.vace_strength = 0.5f;
@@ -1005,28 +1016,9 @@ void trigger_generation()
 						tmptr = &time_info;
 						localtime_s(&time_info, &t);
 
-						for (int i = 0; i < num_frames; ++i)
-						{
-							sd_image_t& frame = frames[i];
-
-							wchar_t output_path[MAX_PATH] = {};
-							_snwprintf(output_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/output/video");
-							CreateDirectory(output_path, 0);
-
-							std::wstringstream ss(L"");
-							ss << output_path << L"/";
-							ss << std::put_time(tmptr, L"%Y-%m-%d %H-%M-%S");
-							ss << "_" << i;
-							ss << ".png";
-
-							char u8_filename[MAX_PATH] = {};
-							WideCharToMultiByte(CP_UTF8, 0, ss.str().c_str(), -1, u8_filename, MAX_PATH, nullptr, nullptr);
-							stbi_write_png(u8_filename, frame.width, frame.height, 3, frame.data, frame.width * 3);
-						}
-
+						// Present first frame to window
 						if (num_frames > 0)
 						{
-							// Present first frame to window
 							sd_image_t* image = &frames[0];
 							w = image->width;
 							h = image->height;
@@ -1050,8 +1042,124 @@ void trigger_generation()
 							push_history(rgba, w, h, true); // save output!
 						}
 
-						// TODO: Encode frames to .webm / .mp4 using ffmpeg or library
-						// e.g. write frames to disk and call ffmpeg
+						wchar_t output_dir[MAX_PATH] = {};
+						_snwprintf(output_dir, MAX_PATH, L"%s%s", originalWorkingDir, L"/output/video");
+						CreateDirectory(output_dir, 0);
+
+						// Save to MP4:
+						if (num_frames > 0)
+						{
+							// 1. Setup Output Directory and File Path
+							std::wstringstream ss;
+							ss << output_dir << L"/";
+							ss << std::put_time(tmptr, L"%Y-%m-%d %H-%M-%S");
+							ss << L".mp4";
+							std::wstring output_file = ss.str();
+
+							int width = frames[0].width;
+							int height = frames[0].height;
+							UINT64 frameDuration = UINT64(10000000 / vid_params.fps); // 100-nanosecond units
+
+							// 2. Initialize Media Foundation
+							CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+							MFStartup(MF_VERSION);
+
+							Microsoft::WRL::ComPtr<IMFSinkWriter> pSinkWriter;
+							Microsoft::WRL::ComPtr<IMFMediaType>  pMediaTypeOut;
+							Microsoft::WRL::ComPtr<IMFMediaType>  pMediaTypeIn;
+							DWORD streamIndex = 0;
+
+							// 3. Create Sink Writer
+							if (FAILED(MFCreateSinkWriterFromURL(output_file.c_str(), NULL, NULL, &pSinkWriter))) return;
+
+							// 4. Set Output Media Type (H.264 Video in MP4)
+							MFCreateMediaType(&pMediaTypeOut);
+							pMediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+							pMediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+							pMediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, 5000000);
+							pMediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+							MFSetAttributeSize(pMediaTypeOut.Get(), MF_MT_FRAME_SIZE, width, height);
+							MFSetAttributeRatio(pMediaTypeOut.Get(), MF_MT_FRAME_RATE, (UINT32)vid_params.fps, 1);
+							MFSetAttributeRatio(pMediaTypeOut.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+							pSinkWriter->AddStream(pMediaTypeOut.Get(), &streamIndex);
+
+							// 5. Set Input Media Type (Raw RGB24)
+							MFCreateMediaType(&pMediaTypeIn);
+							pMediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+							pMediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB24);
+							pMediaTypeIn->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+							MFSetAttributeSize(pMediaTypeIn.Get(), MF_MT_FRAME_SIZE, width, height);
+							MFSetAttributeRatio(pMediaTypeIn.Get(), MF_MT_FRAME_RATE, (UINT32)vid_params.fps, 1);
+							MFSetAttributeRatio(pMediaTypeIn.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+							pSinkWriter->SetInputMediaType(streamIndex, pMediaTypeIn.Get(), NULL);
+
+							// 6. Start Writing
+							pSinkWriter->BeginWriting();
+
+							DWORD cbBuffer = width * height * 3;
+							int stride = width * 3;
+							for (int i = 0; i < num_frames; ++i)
+							{
+								Microsoft::WRL::ComPtr<IMFSample>     pSample;
+								Microsoft::WRL::ComPtr<IMFMediaBuffer> pBuffer;
+								BYTE* pData = NULL;
+
+								MFCreateMemoryBuffer(cbBuffer, &pBuffer);
+								pBuffer->Lock(&pData, NULL, NULL);
+
+								// Copy buffer: Flip bottom-up and swap RGB -> BGR
+								for (int y = 0; y < height; ++y)
+								{
+									const BYTE* srcRow = frames[i].data + (height - 1 - y) * stride;
+									BYTE* dstRow = pData + y * stride;
+
+									for (int x = 0; x < width; ++x)
+									{
+										int idx = x * 3;
+										dstRow[idx + 0] = srcRow[idx + 2];
+										dstRow[idx + 1] = srcRow[idx + 1];
+										dstRow[idx + 2] = srcRow[idx + 0];
+									}
+								}
+
+								pBuffer->Unlock();
+								pBuffer->SetCurrentLength(cbBuffer);
+
+								MFCreateSample(&pSample);
+								pSample->AddBuffer(pBuffer.Get());
+
+								pSample->SetSampleTime(i * frameDuration);
+								pSample->SetSampleDuration(frameDuration);
+
+								pSinkWriter->WriteSample(streamIndex, pSample.Get());
+							}
+
+							// 7. Finalize and Cleanup
+							pSinkWriter->Finalize();
+
+							MFShutdown();
+							CoUninitialize();
+
+							ShellExecuteW(NULL, L"open", output_file.c_str(), NULL, NULL, SW_SHOWNORMAL); // open video
+						}
+
+#if _DEBUG
+						// Save to PNGs:
+						for (int i = 0; i < num_frames; ++i)
+						{
+							sd_image_t& frame = frames[i];
+
+							std::wstringstream ss(L"");
+							ss << output_dir << L"/";
+							ss << std::put_time(tmptr, L"%Y-%m-%d %H-%M-%S");
+							ss << "_" << i;
+							ss << ".png";
+
+							char u8_filename[MAX_PATH] = {};
+							WideCharToMultiByte(CP_UTF8, 0, ss.str().c_str(), -1, u8_filename, MAX_PATH, nullptr, nullptr);
+							stbi_write_png(u8_filename, frame.width, frame.height, 3, frame.data, frame.width * 3);
+						}
+#endif
 					}
 					if (init_img.data) free(init_img.data);
 				}

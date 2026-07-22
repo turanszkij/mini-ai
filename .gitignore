@@ -362,9 +362,12 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 
+output/
+models/
 *.exe
 *.zip
 *.safetensors
 *.gguf
 *.txt
 *.png
+*.mp4
