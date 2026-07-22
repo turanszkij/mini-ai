@@ -881,6 +881,16 @@ void trigger_generation()
 
 			if (mode == MODE_IMAGE_VIDEO)
 			{
+#if 0
+				// Wan 2.2
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan2.2_vae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/umt5-xxl-encoder-Q3_K_M.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Wan2.2-TI2V-5B-Q3_K_M.gguf");
+				
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q3_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q3_K_M.gguf?download=true", diffusion_model_path);
+#else
 				// Lingbot video
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan_2.1_vae.safetensors");
 				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
@@ -889,6 +899,7 @@ void trigger_generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/robbyant/lingbot-video-dense-1.3b/resolve/main/transformer/diffusion_pytorch_model.safetensors?download=true", diffusion_model_path);
+#endif
 			}
 			else
 			{
@@ -914,14 +925,16 @@ void trigger_generation()
 			sd_ctx_params_init(&sd_params);
 			sd_params.vae_path = u8_vae_path;
 			sd_params.llm_path = u8_text_encoder_path;
+			//sd_params.t5xxl_path = u8_text_encoder_path;
 			sd_params.diffusion_model_path = u8_diffusion_model_path;
 			sd_params.wtype = SD_TYPE_COUNT;
 			sd_params.n_threads = -1;
 			sd_params.rng_type = STD_DEFAULT_RNG;
 			sd_params.vae_conv_direct = true;
-			//sd_params.flash_attn = true;
+
 			if (mode == MODE_IMAGE_VIDEO)
 			{
+				//sd_params.flash_attn = true;
 				//sd_params.prediction = FLOW_PRED;
 			}
 
@@ -947,18 +960,18 @@ void trigger_generation()
 					vid_params.height = ((h2 / 2) / 16) * 16;
 					vid_params.prompt = text.c_str();
 
-					vid_params.fps = 24;
+					vid_params.fps = 16;
 					vid_params.video_frames = 25;
 
-					vid_params.strength = 0.5f;
-					vid_params.vace_strength = 0.5f;
+					vid_params.strength = 1.0f;
+					vid_params.vace_strength = 1.0f;
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
 
 					sd_sample_params_init(&vid_params.sample_params);
 					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-					vid_params.sample_params.sample_steps = 30;
+					vid_params.sample_params.sample_steps = 20;
 					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 					vid_params.sample_params.eta = 0.0f;
 					vid_params.sample_params.flow_shift = 3.0f;
@@ -995,15 +1008,6 @@ void trigger_generation()
 							init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 						}
 						vid_params.init_image = init_img;
-					}
-					if (init_img.data != nullptr && (init_img.width != vid_params.width || init_img.height != vid_params.height))
-					{
-						// Prescale the input image to match generation resolution:
-						uint8_t* scaled = stbir_resize_uint8_srgb(init_img.data, init_img.width, init_img.height, 0, (unsigned char*)malloc(vid_params.width * vid_params.height * 3), vid_params.width, vid_params.height, 0, STBIR_RGB);
-						init_img.width = vid_params.width;
-						init_img.height = vid_params.height;
-						free(init_img.data);
-						init_img.data = scaled;
 					}
 
 					sd_audio_t* audio = nullptr;
@@ -1221,15 +1225,6 @@ void trigger_generation()
 							img_params.strength = image_to_image_strength;
 							img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
 							img_params.sample_params.sample_steps = image_to_image_steps;
-						}
-						if (init_img.data != nullptr && (init_img.width != img_params.width || init_img.height != img_params.height))
-						{
-							// Prescale the input image to match generation resolution:
-							uint8_t* scaled = stbir_resize_uint8_srgb(init_img.data, init_img.width, init_img.height, 0, (unsigned char*)malloc(img_params.width * img_params.height * 3), img_params.width, img_params.height, 0, STBIR_RGB);
-							init_img.width = img_params.width;
-							init_img.height = img_params.height;
-							free(init_img.data);
-							init_img.data = scaled;
 						}
 					}
 
