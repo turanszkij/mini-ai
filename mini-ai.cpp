@@ -66,6 +66,7 @@ enum MODE
 	MODE_IMAGE_EDIT,
 	MODE_IMAGE_DESCRIBE,
 	MODE_IMAGE_STORY,
+	MODE_IMAGE_VIDEO,
 };
 static MODE mode = MODE_IMAGE_GENERATE;
 static wchar_t originalWorkingDir[MAX_PATH];
@@ -172,7 +173,7 @@ void SetGenerateButtonText()
 	{
 	default:
 	case MODE_IMAGE_GENERATE:
-		SetWindowTextW(hBtnGenerate, L"\u2728 Generate \u2728");
+		SetWindowTextW(hBtnGenerate, L"\u2728 Image \u2728");
 		break;
 	case MODE_IMAGE_EDIT:
 		SetWindowTextW(hBtnGenerate, L"\u2728 Edit \u2728");
@@ -182,6 +183,9 @@ void SetGenerateButtonText()
 		break;
 	case MODE_IMAGE_STORY:
 		SetWindowTextW(hBtnGenerate, L"\u2728 Story \u2728");
+		break;
+	case MODE_IMAGE_VIDEO:
+		SetWindowTextW(hBtnGenerate, L"\u2728 Video \u2728");
 		break;
 	}
 }
@@ -556,6 +560,10 @@ void trigger_generation()
 		is_generating.store(true);
 		SetWindowText(hBtnGenerate, L"\x23F9 STOP");
 
+		wchar_t models_path[MAX_PATH] = {};
+		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
+		CreateDirectory(models_path, 0);
+
 		if (mode == MODE_IMAGE_DESCRIBE || mode == MODE_IMAGE_STORY)
 		{
 			// Use llama library for text generation:
@@ -592,9 +600,6 @@ void trigger_generation()
 			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
 
-			wchar_t models_path[MAX_PATH] = {};
-			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
-			CreateDirectory(models_path, 0);
 			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
 			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
 
@@ -838,7 +843,9 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(sd_ctx_params_init, stable_diffusion);
 			LINK_DLL_FUNCTION(new_sd_ctx, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_img_gen_params_init, stable_diffusion);
+			LINK_DLL_FUNCTION(sd_vid_gen_params_init, stable_diffusion);
 			LINK_DLL_FUNCTION(generate_image, stable_diffusion);
+			LINK_DLL_FUNCTION(generate_video, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_sample_params_init, stable_diffusion);
 			LINK_DLL_FUNCTION(free_sd_ctx, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_set_log_callback, stable_diffusion);
@@ -861,9 +868,28 @@ void trigger_generation()
 			wchar_t text_encoder_path[MAX_PATH] = {};
 			wchar_t diffusion_model_path[MAX_PATH] = {};
 
-			_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
-			_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
-			_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
+			if (mode == MODE_IMAGE_VIDEO)
+			{
+				// Lingbot video
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan_2.1_vae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/lingbot-video-dense-1.3b.safetensors");
+
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/robbyant/lingbot-video-dense-1.3b/resolve/main/transformer/diffusion_pytorch_model.safetensors?download=true", diffusion_model_path);
+			}
+			else
+			{
+				// Z-image
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
+			}
 
 			char u8_vae_path[MAX_PATH] = {};
 			char u8_text_encoder_path[MAX_PATH] = {};
@@ -872,13 +898,6 @@ void trigger_generation()
 			WideCharToMultiByte(CP_UTF8, 0, vae_path, -1, u8_vae_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, text_encoder_path, -1, u8_text_encoder_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, diffusion_model_path, -1, u8_diffusion_model_path, MAX_PATH, nullptr, nullptr);
-
-			wchar_t models_path[MAX_PATH] = {};
-			_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
-			CreateDirectory(models_path, 0);
-			EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
-			EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
-			EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
 
 			sd_ctx_params_t sd_params;
 			sd_ctx_params_init(&sd_params);
@@ -889,6 +908,17 @@ void trigger_generation()
 			sd_params.n_threads = -1;
 			sd_params.rng_type = STD_DEFAULT_RNG;
 			sd_params.vae_conv_direct = true;
+			sd_params.flash_attn = true;
+			if (mode == MODE_IMAGE_VIDEO)
+			{
+				//sd_params.prediction = FLOW_PRED;
+			}
+
+			//sd_params.backend = "cpu"; // fully runs on CPU (slow)
+			//sd_params.backend = "te=cpu"; // text encode on CPU
+			//sd_params.backend = "vae=cpu"; // VAE decode on CPU
+			//sd_params.backend = "controlnet=cpu"; // control net processing on CPU
+			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
 
 			sd_set_log_callback(sd_log, nullptr);
 			sd_set_progress_callback(sd_callback, nullptr);
@@ -897,28 +927,40 @@ void trigger_generation()
 			sd_ctx = new_sd_ctx(&sd_params);
 			if (sd_ctx != nullptr)
 			{
-				sd_img_gen_params_t img_params;
-				sd_img_gen_params_init(&img_params);
-				img_params.width = w2;
-				img_params.height = h2;
-				img_params.prompt = text.c_str();
-				img_params.strength = 0.0f;
-				img_params.batch_count = 1;
-				img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
-
-				sd_sample_params_init(&img_params.sample_params);
-				img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-				img_params.sample_params.sample_steps = 8;
-				img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
-				img_params.sample_params.eta = 1.0f;
-
-				img_params.sample_params.guidance.txt_cfg = 1.0f;
-				img_params.sample_params.guidance.img_cfg = 1.0f;
-				img_params.sample_params.guidance.distilled_guidance = 3.5f;
-
-				sd_image_t init_img = {};
-				if (mode == MODE_IMAGE_EDIT)
+				if (mode == MODE_IMAGE_VIDEO)
 				{
+					sd_vid_gen_params_t vid_params;
+					sd_vid_gen_params_init(&vid_params);
+
+					//vid_params.width = w2;
+					//vid_params.height = h2;
+					vid_params.width = 256;
+					vid_params.height = 256;
+					vid_params.prompt = text.c_str();
+
+					vid_params.video_frames = 9; // e.g. 17, 25, 33, 49, 81
+					vid_params.fps = 24;
+
+					vid_params.strength = 0.5f;
+					vid_params.vace_strength = 0.5f;
+
+					vid_params.vae_tiling_params.enabled = true;
+					vid_params.vae_tiling_params.temporal_tiling = true;
+					//vid_params.vae_tiling_params.tile_size_x = 512;
+					//vid_params.vae_tiling_params.tile_size_y = 512;
+
+					sd_sample_params_init(&vid_params.sample_params);
+					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+					vid_params.sample_params.sample_steps = 30;
+					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+					vid_params.sample_params.eta = 0.0f;
+					vid_params.sample_params.flow_shift = 3.0f;
+
+					vid_params.sample_params.guidance.txt_cfg = 0.5f;
+					vid_params.sample_params.guidance.img_cfg = 0.0f;
+					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
+
+					sd_image_t init_img = {};
 					if (rgba2 != nullptr)
 					{
 						init_img.width = w2;
@@ -931,10 +973,9 @@ void trigger_generation()
 							init_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
 							init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
 						}
-						img_params.init_image = init_img;
-						img_params.strength = image_to_image_strength;
-						img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
-						img_params.sample_params.sample_steps = image_to_image_steps;
+						vid_params.init_image = init_img;
+						vid_params.sample_params.guidance.txt_cfg = 0.0f;
+						vid_params.sample_params.guidance.img_cfg = 1.0f;
 					}
 					else if (rgba != nullptr)
 					{
@@ -948,40 +989,160 @@ void trigger_generation()
 							init_img.data[i * 3 + 1] = rgba[i * 4 + 1];
 							init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 						}
-						img_params.init_image = init_img;
-						img_params.strength = image_to_image_strength;
-						img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
-						img_params.sample_params.sample_steps = image_to_image_steps;
+						vid_params.init_image = init_img;
+						vid_params.sample_params.guidance.txt_cfg = 0.0f;
+						vid_params.sample_params.guidance.img_cfg = 1.0f;
 					}
-				}
 
-				sd_image_t* image = nullptr;
-				int num_images = 1;
-				if (generate_image(sd_ctx, &img_params, &image, &num_images))
+					sd_audio_t* audio = nullptr;
+					sd_image_t* frames = nullptr;
+					int num_frames = 0;
+					if (generate_video(sd_ctx, &vid_params, &frames, &num_frames, &audio))
+					{
+						time_t t = std::time(nullptr);
+						struct tm* tmptr;
+						struct tm time_info;
+						tmptr = &time_info;
+						localtime_s(&time_info, &t);
+
+						for (int i = 0; i < num_frames; ++i)
+						{
+							sd_image_t& frame = frames[i];
+
+							wchar_t output_path[MAX_PATH] = {};
+							_snwprintf(output_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/output/video");
+							CreateDirectory(output_path, 0);
+
+							std::wstringstream ss(L"");
+							ss << output_path << L"/";
+							ss << std::put_time(tmptr, L"%Y-%m-%d %H-%M-%S");
+							ss << "_" << i;
+							ss << ".png";
+
+							char u8_filename[MAX_PATH] = {};
+							WideCharToMultiByte(CP_UTF8, 0, ss.str().c_str(), -1, u8_filename, MAX_PATH, nullptr, nullptr);
+							stbi_write_png(u8_filename, frame.width, frame.height, 3, frame.data, frame.width * 3);
+						}
+
+						if (num_frames > 0)
+						{
+							// Present first frame to window
+							sd_image_t* image = &frames[0];
+							w = image->width;
+							h = image->height;
+							if (rgba)
+							{
+								free(rgba);
+								rgba = nullptr;
+							}
+							rgba = (unsigned char*)malloc(w * h * 4);
+							struct Color3 { unsigned char r, g, b; };
+							struct Color4 { unsigned char r, g, b, a; };
+							for (int i = 0; i < w * h; ++i)
+							{
+								const Color3& src = ((Color3*)image->data)[i];
+								Color4& dst = ((Color4*)rgba)[i];
+								dst.r = src.r;
+								dst.g = src.g;
+								dst.b = src.b;
+								dst.a = 255;
+							}
+							push_history(rgba, w, h, true); // save output!
+						}
+
+						// TODO: Encode frames to .webm / .mp4 using ffmpeg or library
+						// e.g. write frames to disk and call ffmpeg
+					}
+					if (init_img.data) free(init_img.data);
+				}
+				else
 				{
-					w = image->width;
-					h = image->height;
-					if (rgba)
+					sd_img_gen_params_t img_params;
+					sd_img_gen_params_init(&img_params);
+					img_params.width = w2;
+					img_params.height = h2;
+					img_params.prompt = text.c_str();
+					img_params.strength = 0.0f;
+					img_params.batch_count = 1;
+					img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
+
+					sd_sample_params_init(&img_params.sample_params);
+					img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+					img_params.sample_params.sample_steps = 8;
+					img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+					img_params.sample_params.eta = 1.0f;
+
+					img_params.sample_params.guidance.txt_cfg = 1.0f;
+					img_params.sample_params.guidance.img_cfg = 1.0f;
+					img_params.sample_params.guidance.distilled_guidance = 3.5f;
+
+					sd_image_t init_img = {};
+					if (mode == MODE_IMAGE_EDIT)
 					{
-						free(rgba);
-						rgba = nullptr;
+						if (rgba2 != nullptr)
+						{
+							init_img.width = w2;
+							init_img.height = h2;
+							init_img.channel = 3;
+							init_img.data = (uint8_t*)malloc(w2 * h2 * 3);
+							for (int i = 0; i < w2 * h2; ++i)
+							{
+								init_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
+								init_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
+								init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
+							}
+							img_params.init_image = init_img;
+							img_params.strength = image_to_image_strength;
+							img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+							img_params.sample_params.sample_steps = image_to_image_steps;
+						}
+						else if (rgba != nullptr)
+						{
+							init_img.width = w;
+							init_img.height = h;
+							init_img.channel = 3;
+							init_img.data = (uint8_t*)malloc(w * h * 3);
+							for (int i = 0; i < w * h; ++i)
+							{
+								init_img.data[i * 3 + 0] = rgba[i * 4 + 0];
+								init_img.data[i * 3 + 1] = rgba[i * 4 + 1];
+								init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
+							}
+							img_params.init_image = init_img;
+							img_params.strength = image_to_image_strength;
+							img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
+							img_params.sample_params.sample_steps = image_to_image_steps;
+						}
 					}
-					rgba = (unsigned char*)malloc(w * h * 4);
-					struct Color3 { unsigned char r, g, b; };
-					struct Color4 { unsigned char r, g, b, a; };
-					for (int i = 0; i < w * h; ++i)
+
+					sd_image_t* image = nullptr;
+					int num_images = 1;
+					if (generate_image(sd_ctx, &img_params, &image, &num_images))
 					{
-						const Color3& src = ((Color3*)image->data)[i];
-						Color4& dst = ((Color4*)rgba)[i];
-						dst.r = src.r;
-						dst.g = src.g;
-						dst.b = src.b;
-						dst.a = 255;
+						w = image->width;
+						h = image->height;
+						if (rgba)
+						{
+							free(rgba);
+							rgba = nullptr;
+						}
+						rgba = (unsigned char*)malloc(w * h * 4);
+						struct Color3 { unsigned char r, g, b; };
+						struct Color4 { unsigned char r, g, b, a; };
+						for (int i = 0; i < w * h; ++i)
+						{
+							const Color3& src = ((Color3*)image->data)[i];
+							Color4& dst = ((Color4*)rgba)[i];
+							dst.r = src.r;
+							dst.g = src.g;
+							dst.b = src.b;
+							dst.a = 255;
+						}
+						push_history(rgba, w, h, true); // save output!
 					}
-					push_history(rgba, w, h, true); // save output!
+					if (init_img.data) free(init_img.data);
 				}
 				free_sd_ctx(sd_ctx);
-				if (init_img.data) free(init_img.data);
 			}
 
 			while (true)
@@ -1716,6 +1877,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 103, L"Describe Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_STORY ? MF_CHECKED : 0), 104, L"Story from Image");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_VIDEO ? MF_CHECKED : 0), 105, L"Video from Image");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
@@ -1735,6 +1897,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						break;
 					case 104:
 						mode = MODE_IMAGE_STORY;
+						break;
+					case 105:
+						mode = MODE_IMAGE_VIDEO;
 						break;
 					}
 
@@ -1796,7 +1961,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	hBtnSave = CreateWindowW(L"BUTTON", L"\xE74E", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_SAVE_BUTTON, hInstance, NULL);
 	hBtnCopy = CreateWindowW(L"BUTTON", L"\xE8C8", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_COPY_BUTTON, hInstance, NULL);
 	hBtnClear = CreateWindowW(L"BUTTON", L"\xE74D", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_CLEAR_BUTTON, hInstance, NULL);
-	hBtnGenerate = CreateWindowW(L"BUTTON", L"\u2728 Generate \u2728", WS_CHILD | WS_VISIBLE | BS_SPLITBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
+	hBtnGenerate = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_SPLITBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
 	hBtnUndo = CreateWindowW(L"BUTTON", L"\xE7A7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_UNDO_BUTTON, hInstance, NULL);
 	hBtnRedo = CreateWindowW(L"BUTTON", L"\xE7A6", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_REDO_BUTTON, hInstance, NULL);
 
@@ -1820,6 +1985,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	AddToolTip(window, hBtnUndo, L"Previous image");
 	AddToolTip(window, hBtnRedo, L"Next image");
 	AddToolTip(window, hBtnGenerate, L"Generate Image from Prompt (Ctrl+Enter). If there is already an image, it will be used as input to generation");
+
+	SetGenerateButtonText();
 
 	update_undo_redo_states();
 
