@@ -472,7 +472,7 @@ void sd_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, vo
 {
 	if (frame_count == 0)
 		return;
-	sd_image_t* image = &frames[0];
+	sd_image_t* image = &frames[frame_count - 1];
 	w = image->width;
 	h = image->height;
 	if (rgba)
@@ -943,22 +943,18 @@ void trigger_generation()
 					sd_vid_gen_params_t vid_params;
 					sd_vid_gen_params_init(&vid_params);
 
-					//vid_params.width = w2;
-					//vid_params.height = h2;
-					vid_params.width = 256;
-					vid_params.height = 256;
+					vid_params.width = ((w2 / 2) / 16) * 16;
+					vid_params.height = ((h2 / 2) / 16) * 16;
 					vid_params.prompt = text.c_str();
 
 					vid_params.fps = 24;
-					vid_params.video_frames = vid_params.fps + 1; // e.g. 17, 25, 33, 49, 81
+					vid_params.video_frames = 25;
 
 					vid_params.strength = 0.5f;
 					vid_params.vace_strength = 0.5f;
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
-					//vid_params.vae_tiling_params.tile_size_x = 512;
-					//vid_params.vae_tiling_params.tile_size_y = 512;
 
 					sd_sample_params_init(&vid_params.sample_params);
 					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
@@ -967,7 +963,7 @@ void trigger_generation()
 					vid_params.sample_params.eta = 0.0f;
 					vid_params.sample_params.flow_shift = 3.0f;
 
-					vid_params.sample_params.guidance.txt_cfg = 0.5f;
+					vid_params.sample_params.guidance.txt_cfg = 0.0f;
 					vid_params.sample_params.guidance.img_cfg = 0.0f;
 					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
 
@@ -985,8 +981,6 @@ void trigger_generation()
 							init_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
 						}
 						vid_params.init_image = init_img;
-						vid_params.sample_params.guidance.txt_cfg = 0.0f;
-						vid_params.sample_params.guidance.img_cfg = 1.0f;
 					}
 					else if (rgba != nullptr)
 					{
@@ -1001,8 +995,15 @@ void trigger_generation()
 							init_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 						}
 						vid_params.init_image = init_img;
-						vid_params.sample_params.guidance.txt_cfg = 0.0f;
-						vid_params.sample_params.guidance.img_cfg = 1.0f;
+					}
+					if (init_img.data != nullptr && (init_img.width != vid_params.width || init_img.height != vid_params.height))
+					{
+						// Prescale the input image to match generation resolution:
+						uint8_t* scaled = stbir_resize_uint8_srgb(init_img.data, init_img.width, init_img.height, 0, (unsigned char*)malloc(vid_params.width * vid_params.height * 3), vid_params.width, vid_params.height, 0, STBIR_RGB);
+						init_img.width = vid_params.width;
+						init_img.height = vid_params.height;
+						free(init_img.data);
+						init_img.data = scaled;
 					}
 
 					sd_audio_t* audio = nullptr;
@@ -1016,10 +1017,10 @@ void trigger_generation()
 						tmptr = &time_info;
 						localtime_s(&time_info, &t);
 
-						// Present first frame to window
+						// Present last frame to window
 						if (num_frames > 0)
 						{
-							sd_image_t* image = &frames[0];
+							sd_image_t* image = &frames[num_frames - 1];
 							w = image->width;
 							h = image->height;
 							if (rgba)
@@ -1039,7 +1040,7 @@ void trigger_generation()
 								dst.b = src.b;
 								dst.a = 255;
 							}
-							push_history(rgba, w, h, true); // save output!
+							push_history(rgba, w, h);
 						}
 
 						wchar_t output_dir[MAX_PATH] = {};
@@ -1221,10 +1222,19 @@ void trigger_generation()
 							img_params.sample_params.guidance.txt_cfg = image_to_image_txt_cfg;
 							img_params.sample_params.sample_steps = image_to_image_steps;
 						}
+						if (init_img.data != nullptr && (init_img.width != img_params.width || init_img.height != img_params.height))
+						{
+							// Prescale the input image to match generation resolution:
+							uint8_t* scaled = stbir_resize_uint8_srgb(init_img.data, init_img.width, init_img.height, 0, (unsigned char*)malloc(img_params.width * img_params.height * 3), img_params.width, img_params.height, 0, STBIR_RGB);
+							init_img.width = img_params.width;
+							init_img.height = img_params.height;
+							free(init_img.data);
+							init_img.data = scaled;
+						}
 					}
 
 					sd_image_t* image = nullptr;
-					int num_images = 1;
+					int num_images = 0;
 					if (generate_image(sd_ctx, &img_params, &image, &num_images))
 					{
 						w = image->width;
