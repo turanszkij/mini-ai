@@ -77,7 +77,6 @@ enum MODE
 	MODE_IMAGE_GENERATE,
 	MODE_IMAGE_EDIT,
 	MODE_IMAGE_DESCRIBE,
-	MODE_IMAGE_STORY,
 	MODE_IMAGE_VIDEO,
 };
 static MODE mode = MODE_IMAGE_GENERATE;
@@ -191,9 +190,6 @@ void SetGenerateButtonText()
 		break;
 	case MODE_IMAGE_DESCRIBE:
 		SetWindowTextW(hBtnGenerate, L"\u2728 Describe \u2728");
-		break;
-	case MODE_IMAGE_STORY:
-		SetWindowTextW(hBtnGenerate, L"\u2728 Story \u2728");
 		break;
 	case MODE_IMAGE_VIDEO:
 		SetWindowTextW(hBtnGenerate, L"\u2728 Video \u2728");
@@ -575,30 +571,15 @@ void trigger_generation()
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 		CreateDirectory(models_path, 0);
 
-		if (mode == MODE_IMAGE_DESCRIBE || mode == MODE_IMAGE_STORY)
+		if (mode == MODE_IMAGE_DESCRIBE)
 		{
 			// Use llama library for text generation:
 
-			std::string prompt;
-			static const char prompt_describe[] =
+			static const char prompt[] =
 				"Describe the image in a natural, descriptive style. "
 				"Do not repeat the description. "
 				"Do not write internal notes. "
 				"Do not use markdown, bullet points, headers, or code blocks.";
-			static const char prompt_story[] =
-				"Create a long story based on this image in a natural, descriptive style. "
-				"Describe the scene, occupants, their names, their internal and external monologue and dialogues. "
-				"Do not repeat the description. "
-				"Do not write internal notes. "
-				"Do not use markdown, bullet points, headers, or code blocks.";
-			if (mode == MODE_IMAGE_DESCRIBE)
-			{
-				prompt = prompt_describe;
-			}
-			else
-			{
-				prompt = prompt_story;
-			}
 
 			wchar_t model_path[MAX_PATH] = {};
 			wchar_t mmproj_path[MAX_PATH] = {};
@@ -1989,8 +1970,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate New Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 103, L"Describe Image");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_STORY ? MF_CHECKED : 0), 104, L"Story from Image");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_VIDEO ? MF_CHECKED : 0), 105, L"Video from Image");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_VIDEO ? MF_CHECKED : 0), 104, L"Video from Image");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
@@ -2009,9 +1989,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						mode = MODE_IMAGE_DESCRIBE;
 						break;
 					case 104:
-						mode = MODE_IMAGE_STORY;
-						break;
-					case 105:
 						mode = MODE_IMAGE_VIDEO;
 						break;
 					}
