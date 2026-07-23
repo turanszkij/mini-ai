@@ -961,10 +961,10 @@ void trigger_generation()
 					vid_params.prompt = text.c_str();
 
 					vid_params.fps = 8;
-					vid_params.video_frames = 25;
+					vid_params.video_frames = vid_params.fps * 4 + 1; // + 1 start frame
 
 					vid_params.strength = 0.5f;
-					vid_params.vace_strength = 0.7f;
+					vid_params.vace_strength = 0.5f;
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
