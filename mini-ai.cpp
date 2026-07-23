@@ -935,7 +935,7 @@ void trigger_generation()
 			if (mode == MODE_IMAGE_VIDEO)
 			{
 				//sd_params.flash_attn = true;
-				//sd_params.prediction = FLOW_PRED;
+				sd_params.prediction = FLOW_PRED;
 			}
 
 			//sd_params.backend = "cpu"; // fully runs on CPU (slow)
@@ -960,11 +960,11 @@ void trigger_generation()
 					vid_params.height = ((h2 / 2) / 16) * 16;
 					vid_params.prompt = text.c_str();
 
-					vid_params.fps = 16;
+					vid_params.fps = 8;
 					vid_params.video_frames = 25;
 
-					vid_params.strength = 1.0f;
-					vid_params.vace_strength = 1.0f;
+					vid_params.strength = 0.5f;
+					vid_params.vace_strength = 0.7f;
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
@@ -974,7 +974,7 @@ void trigger_generation()
 					vid_params.sample_params.sample_steps = 20;
 					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 					vid_params.sample_params.eta = 0.0f;
-					vid_params.sample_params.flow_shift = 3.0f;
+					vid_params.sample_params.flow_shift = 2.0f;
 
 					vid_params.sample_params.guidance.txt_cfg = 0.0f;
 					vid_params.sample_params.guidance.img_cfg = 0.0f;
