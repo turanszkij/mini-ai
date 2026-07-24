@@ -955,8 +955,8 @@ void trigger_generation()
 					vid_params.sample_params.eta = 0.0f;
 					vid_params.sample_params.flow_shift = 2.0f;
 
-					vid_params.sample_params.guidance.txt_cfg = 0.0f;
-					vid_params.sample_params.guidance.img_cfg = 0.0f;
+					vid_params.sample_params.guidance.txt_cfg = 4.0f;
+					vid_params.sample_params.guidance.img_cfg = 0.5f;
 					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
 
 					if (rgba2 != nullptr)
