@@ -77,7 +77,7 @@ enum MODE
 	MODE_IMAGE_GENERATE,
 	MODE_IMAGE_EDIT,
 	MODE_IMAGE_DESCRIBE,
-	MODE_IMAGE_VIDEO,
+	MODE_VIDEO,
 };
 static MODE mode = MODE_IMAGE_GENERATE;
 static wchar_t originalWorkingDir[MAX_PATH];
@@ -186,7 +186,7 @@ void SetGenerateButtonText()
 	case MODE_IMAGE_DESCRIBE:
 		SetWindowTextW(hBtnGenerate, L"\u2728 Describe \u2728");
 		break;
-	case MODE_IMAGE_VIDEO:
+	case MODE_VIDEO:
 		SetWindowTextW(hBtnGenerate, L"\u2728 Video \u2728");
 		break;
 	}
@@ -562,19 +562,26 @@ void trigger_generation()
 		is_generating.store(true);
 		SetWindowText(hBtnGenerate, L"\x23F9 STOP");
 
+		std::string prompt;
+		const int textbox_length = GetWindowTextLengthW(hEdit);
+		if (textbox_length > 0)
+		{
+			std::wstring buffer(textbox_length, L'\0');
+			GetWindowTextW(hEdit, &buffer[0], textbox_length + 1);
+			int utf8len = WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, nullptr, 0, nullptr, nullptr);
+			prompt.resize(utf8len, '\0');
+			WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, prompt.data(), (int)prompt.length(), nullptr, nullptr);
+		}
+
+		const bool has_image = rgba != nullptr || rgba2 != nullptr;
+
 		wchar_t models_path[MAX_PATH] = {};
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 		CreateDirectory(models_path, 0);
 
-		if (mode == MODE_IMAGE_DESCRIBE)
+		if (has_image && (mode == MODE_IMAGE_DESCRIBE || mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO))
 		{
-			// Use llama library for text generation:
-
-			static const char prompt[] =
-				"Describe the image in a natural, descriptive style. "
-				"Do not repeat the description. "
-				"Do not write internal notes. "
-				"Do not use markdown, bullet points, headers, or code blocks.";
+			// Use llama library for text generation from image:
 
 			wchar_t model_path[MAX_PATH] = {};
 			wchar_t mmproj_path[MAX_PATH] = {};
@@ -621,6 +628,7 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(llama_model_load_from_file, llama);
 			LINK_DLL_FUNCTION(llama_init_from_model, llama);
 			LINK_DLL_FUNCTION(llama_sampler_chain_init, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_default_params, llama);
 			LINK_DLL_FUNCTION(llama_sampler_chain_add, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_penalties, llama);
 			LINK_DLL_FUNCTION(llama_sampler_init_greedy, llama);
@@ -703,9 +711,63 @@ void trigger_generation()
 						}
 						mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
 
-						const char* image_marker = mtmd_default_marker();
+						std::string llama_prompt = "<|im_start|>system\n";
 
-						std::string full_text = std::string(image_marker) + prompt;
+						if (mode == MODE_IMAGE_EDIT)
+						{
+							llama_prompt +=
+								"You are an image editing prompt parser. Analyze the input image and the requested modification. "
+								"Generate a single, complete, and self-contained description of the final target image with all modifications fully integrated.\n"
+								"STRICT RULES:\n"
+								"- Describe ONLY the final desired scene.\n"
+								"- NEVER mention the original image, changes, edits, before/after states, or user instructions (e.g., DO NOT say 'changed to', 'instead of', 'modified', 'added').\n"
+								"- Do not repeat the description.\n"
+								"- Do not write internal notes.\n"
+								"- Output plain text only.<|im_end|>\n";
+							llama_prompt += "<|im_start|>user\n";
+							llama_prompt += "Requested modification: ";
+							llama_prompt += prompt.c_str();
+							llama_prompt += "<|im_end|>\n";
+						}
+						else if (mode == MODE_VIDEO)
+						{
+							if (prompt.empty())
+							{
+								llama_prompt +=
+									"You are a video scene director for LingBot-Video. Analyze the provided initial frame and write a complete visual description "
+									"of a natural 5-second video sequence starting from this image. Infer plausible physical dynamics based on the scene (e.g., subtle wind in hair/clothing, water ripples, ambient light shifts, or gentle camera panning).\n"
+									"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+								llama_prompt += "<|im_start|>user\n";
+								llama_prompt += "Generate natural video motion for this image.<|im_end|>\n";
+							}
+							else
+							{
+								llama_prompt +=
+									"You are a video scene director for LingBot-Video. Analyze the provided initial frame and write a complete visual description "
+									"of the video scene. Describe the subject, ambient motion, lighting shifts, physical dynamics, and camera movement over time based on the user's direction.\n"
+									"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+								llama_prompt += "<|im_start|>user\n";
+								llama_prompt += "User video direction: ";
+								llama_prompt += prompt.c_str();
+								llama_prompt += "<|im_end|>\n";
+							}
+						}
+						else
+						{
+							llama_prompt +=
+								"You are an image descriptor. Describe the provided image in a clear, natural, and descriptive style.\n"
+								"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+
+							llama_prompt += "<|im_start|>user\n";
+							llama_prompt += "Describe this image.<|im_end|>\n";
+						}
+
+						llama_prompt += "<|im_start|>assistant\n";
+
+						OutputDebugStringA(llama_prompt.c_str());
+
+						const char* image_marker = mtmd_default_marker();
+						std::string full_text = std::string(image_marker) + llama_prompt;
 
 						mtmd_input_text input_text = {};
 						input_text.text = full_text.c_str();
@@ -722,8 +784,7 @@ void trigger_generation()
 							llama_pos n_past = 0;
 							if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) == 0)
 							{
-								llama_sampler_chain_params chain_params = {};
-								llama_sampler* smpl = llama_sampler_chain_init(chain_params);
+								llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
 								llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
 								llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
 								llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
@@ -763,10 +824,19 @@ void trigger_generation()
 									llama_decode(ctx, batch);
 									n_past += 1;
 
-									post_description(result_text);
+									if (mode == MODE_IMAGE_DESCRIBE)
+										post_description(result_text);
 								}
 
-								post_description(result_text);
+								if (mode == MODE_IMAGE_DESCRIBE)
+								{
+									post_description(result_text);
+								}
+								else
+								{
+									prompt = result_text;
+									OutputDebugStringA(prompt.c_str());
+								}
 
 								llama_sampler_free(smpl);
 							}
@@ -797,16 +867,183 @@ void trigger_generation()
 			FreeLibrary(ggml);
 			FreeLibrary(mtmd);
 		}
-		else
+		
+		// For video, an additional pass converts the natural description to LingBot JSON format:
+		if (mode == MODE_VIDEO && !prompt.empty())
 		{
-			// Use stable diffusion library for image generation:
+			// Use llama library for text generation from user prompt but without image:
 
-			int length = GetWindowTextLengthW(hEdit);
-			std::wstring buffer(length, L'\0');
-			GetWindowTextW(hEdit, &buffer[0], length + 1);
-			int utf8len = WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, nullptr, 0, nullptr, nullptr);
-			std::string text(utf8len, '\0');
-			WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, text.data(), (int)text.length(), nullptr, nullptr);
+			wchar_t model_path[MAX_PATH] = {};
+			char u8_model_path[MAX_PATH] = {};
+			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
+			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
+
+			wchar_t dll_dir[MAX_PATH] = {};
+			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
+			SetDllDirectory(dll_dir);
+
+			HMODULE llama = LoadLibrary(L"llama.dll");
+			if (llama == nullptr)
+			{
+				MessageBoxA(window, "llama.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+			HMODULE ggml = LoadLibrary(L"ggml.dll");
+			if (ggml == nullptr)
+			{
+				FreeLibrary(llama);
+				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+
+			LINK_DLL_FUNCTION(llama_model_default_params, llama);
+			LINK_DLL_FUNCTION(llama_context_default_params, llama);
+			LINK_DLL_FUNCTION(llama_model_load_from_file, llama);
+			LINK_DLL_FUNCTION(llama_init_from_model, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_init, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_default_params, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_add, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_greedy, llama);
+			LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
+			LINK_DLL_FUNCTION(llama_sampler_sample, llama);
+			LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
+			LINK_DLL_FUNCTION(llama_token_to_piece, llama);
+			LINK_DLL_FUNCTION(llama_batch_get_one, llama);
+			LINK_DLL_FUNCTION(llama_decode, llama);
+			LINK_DLL_FUNCTION(llama_sampler_free, llama);
+			LINK_DLL_FUNCTION(llama_model_free, llama);
+			LINK_DLL_FUNCTION(llama_free, llama);
+			LINK_DLL_FUNCTION(llama_backend_free, llama);
+			LINK_DLL_FUNCTION(llama_log_set, llama);
+			LINK_DLL_FUNCTION(llama_tokenize, llama);
+			LINK_DLL_FUNCTION(llama_batch_init, llama);
+			LINK_DLL_FUNCTION(llama_batch_free, llama);
+			LINK_DLL_FUNCTION(llama_get_logits_ith, llama);
+
+			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_unload, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
+
+			char u8_dll_dir[MAX_PATH];
+			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
+			ggml_backend_load_all_from_path(u8_dll_dir);
+
+			llama_log_set(llama_callback, nullptr);
+
+			llama_model_params model_params = llama_model_default_params();
+			model_params.n_gpu_layers = -1;
+			model_params.progress_callback = my_llama_progress_callback;
+
+			llama_context_params ctx_params = llama_context_default_params();
+			ctx_params.n_ctx = 4096;
+			ctx_params.n_batch = 512;
+
+			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
+			if (model != nullptr && !cancel_request.load())
+			{
+				llama_context* ctx = llama_init_from_model(model, ctx_params);
+				if (ctx != nullptr && !cancel_request.load())
+				{
+					OutputDebugStringA("STARTING PROMPT -> VIDEO TEXT");
+					std::string llama_prompt;
+					llama_prompt += "<|im_start|>system\n";
+					llama_prompt += "You are a video prompt parser. Convert natural language into strict, valid JSON for AI video generation. Expand the user prompt to an creatively directed video description. Output JSON ONLY.<|im_end|>\n";
+					llama_prompt += "<|im_start|>user\n";
+					llama_prompt += prompt.c_str();
+					llama_prompt += "<|im_end|>\n<|im_start|>assistant\n";
+					OutputDebugStringA(llama_prompt.c_str());
+
+					const llama_vocab* vocab = llama_model_get_vocab(model);
+
+					int n_prompt_tokens = -llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), NULL, 0, true, true);
+					std::vector<llama_token> prompt_tokens(n_prompt_tokens);
+					if (llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), prompt_tokens.data(), (int)prompt_tokens.size(), true, true) >= 0)
+					{
+						llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+						llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
+						llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
+						for (size_t i = 0; i < prompt_tokens.size(); i++) {
+							batch.token[i] = prompt_tokens[i];
+							batch.pos[i] = (llama_pos)i;
+							batch.n_seq_id[i] = 1;
+							batch.seq_id[i][0] = 0;
+							batch.logits[i] = (i == prompt_tokens.size() - 1);
+						}
+						batch.n_tokens = (int32_t)prompt_tokens.size();
+
+						if (llama_decode(ctx, batch) == 0)
+						{
+							std::string generated_json = "";
+							int n_cur = batch.n_tokens;
+							int n_decode_max = 1024;
+
+							while (n_cur < n_decode_max && !cancel_request.load()) 
+							{
+								llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
+								if (llama_vocab_is_eog(vocab, new_token_id)) {
+									break;
+								}
+								char piece_buf[128] = { 0 };
+								int n = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf), 0, true);
+								if (n > 0) {
+									generated_json.append(piece_buf, n);
+								}
+
+								batch.n_tokens = 0;
+								batch.token[0] = new_token_id;
+								batch.pos[0] = n_cur;
+								batch.n_seq_id[0] = 1;
+								batch.seq_id[0][0] = 0;
+								batch.logits[0] = true;
+								batch.n_tokens = 1;
+
+								n_cur++;
+
+								if (llama_decode(ctx, batch) != 0)
+									break;
+							}
+
+							if (!generated_json.empty())
+							{
+								prompt = generated_json;
+								OutputDebugStringA("Prompt rewriter for video success:\n");
+								OutputDebugStringA(prompt.c_str());
+							}
+						}
+
+						llama_batch_free(batch);
+						llama_sampler_free(smpl);
+					}
+				}
+			}
+
+			llama_model_free(model);
+			llama_backend_free();
+
+			while (true)
+			{
+				size_t n = ggml_backend_reg_count();
+				if (n == 0) break;
+				ggml_backend_reg_t reg = ggml_backend_reg_get(n - 1);
+				if (reg)
+				{
+					ggml_backend_unload(reg);
+				}
+			}
+
+			FreeLibrary(llama);
+			FreeLibrary(ggml);
+		}
+
+		if (mode == MODE_IMAGE_GENERATE || mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+		{
+			// Use stable diffusion library for image/video generation:
+
 			SavePrompt(hEdit);
 
 			wchar_t dll_dir[MAX_PATH] = {};
@@ -856,7 +1093,7 @@ void trigger_generation()
 			wchar_t text_encoder_path[MAX_PATH] = {};
 			wchar_t diffusion_model_path[MAX_PATH] = {};
 
-			if (mode == MODE_IMAGE_VIDEO)
+			if (mode == MODE_VIDEO)
 			{
 #if 1
 				// Lingbot video
@@ -911,7 +1148,7 @@ void trigger_generation()
 			sd_params.rng_type = STD_DEFAULT_RNG;
 			sd_params.vae_conv_direct = true;
 
-			if (mode == MODE_IMAGE_VIDEO)
+			if (mode == MODE_VIDEO)
 			{
 				//sd_params.flash_attn = true;
 				sd_params.prediction = FLOW_PRED;
@@ -930,7 +1167,7 @@ void trigger_generation()
 			sd_ctx = new_sd_ctx(&sd_params);
 			if (sd_ctx != nullptr)
 			{
-				if (mode == MODE_IMAGE_VIDEO)
+				if (mode == MODE_VIDEO)
 				{
 					sd_vid_gen_params_t vid_params;
 					sd_vid_gen_params_init(&vid_params);
@@ -941,8 +1178,16 @@ void trigger_generation()
 					vid_params.fps = 8;
 					vid_params.video_frames = vid_params.fps * 4 + 1; // + 1 start frame
 
-					vid_params.strength = 0.6f;
-					vid_params.vace_strength = 0.76f;
+					if (has_image)
+					{
+						vid_params.strength = 0.5f;
+						vid_params.vace_strength = 0.5f;
+					}
+					else
+					{
+						vid_params.strength = 1.0f;
+						vid_params.vace_strength = 0.0f;
+					}
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
@@ -954,18 +1199,18 @@ void trigger_generation()
 					vid_params.sample_params.eta = 0.0f;
 					vid_params.sample_params.flow_shift = 4.0f;
 
+					vid_params.sample_params.guidance.txt_cfg = 0.0f;
+					vid_params.sample_params.guidance.img_cfg = 0.0f;
 					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
 
-					if (text.empty())
+					if (!prompt.empty())
 					{
-						vid_params.sample_params.guidance.txt_cfg = 0.0f;
-						vid_params.sample_params.guidance.img_cfg = 0.0f;
-					}
-					else
-					{
-						vid_params.sample_params.guidance.txt_cfg = 4.0f;
-						vid_params.sample_params.guidance.img_cfg = 1.0f;
-						vid_params.prompt = text.c_str();
+						vid_params.sample_params.guidance.txt_cfg = 1.0f;
+						if (has_image)
+						{
+							vid_params.sample_params.guidance.img_cfg = 1.2f;
+						}
+						vid_params.prompt = prompt.c_str();
 					}
 
 					if (rgba2 != nullptr)
@@ -1168,8 +1413,8 @@ void trigger_generation()
 					sd_img_gen_params_init(&img_params);
 					img_params.width = w2;
 					img_params.height = h2;
-					img_params.prompt = text.c_str();
-					img_params.strength = 0.4f; // affects image to image
+					img_params.prompt = prompt.c_str();
+					img_params.strength = 0.71f; // affects image to image
 					img_params.batch_count = 1;
 					img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
 
@@ -1177,49 +1422,53 @@ void trigger_generation()
 					img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
 					img_params.sample_params.sample_steps = 8;
 					img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
-					img_params.sample_params.eta = 1.0f;
+					img_params.sample_params.eta = 0.0f;
 
 					img_params.sample_params.guidance.txt_cfg = 1.0f;
 					img_params.sample_params.guidance.img_cfg = 1.0f;
-					img_params.sample_params.guidance.distilled_guidance = 0.0f;
+					img_params.sample_params.guidance.distilled_guidance = 3.5f;
 
+					sd_image_t ref_img = {};
 					if (mode == MODE_IMAGE_EDIT)
 					{
 						if (rgba2 != nullptr)
 						{
-							img_params.init_image.width = w2;
-							img_params.init_image.height = h2;
-							img_params.init_image.channel = 3;
-							img_params.init_image.data = (uint8_t*)malloc(w2 * h2 * 3);
+							ref_img.width = w2;
+							ref_img.height = h2;
+							ref_img.channel = 3;
+							ref_img.data = (uint8_t*)malloc(w2 * h2 * 3);
 							for (int i = 0; i < w2 * h2; ++i)
 							{
-								img_params.init_image.data[i * 3 + 0] = rgba2[i * 4 + 0];
-								img_params.init_image.data[i * 3 + 1] = rgba2[i * 4 + 1];
-								img_params.init_image.data[i * 3 + 2] = rgba2[i * 4 + 2];
+								ref_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
+								ref_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
+								ref_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
 							}
 						}
 						else if (rgba != nullptr)
 						{
-							img_params.init_image.width = w;
-							img_params.init_image.height = h;
-							img_params.init_image.channel = 3;
-							img_params.init_image.data = (uint8_t*)malloc(w * h * 3);
+							ref_img.width = w;
+							ref_img.height = h;
+							ref_img.channel = 3;
+							ref_img.data = (uint8_t*)malloc(w * h * 3);
 							for (int i = 0; i < w * h; ++i)
 							{
-								img_params.init_image.data[i * 3 + 0] = rgba[i * 4 + 0];
-								img_params.init_image.data[i * 3 + 1] = rgba[i * 4 + 1];
-								img_params.init_image.data[i * 3 + 2] = rgba[i * 4 + 2];
+								ref_img.data[i * 3 + 0] = rgba[i * 4 + 0];
+								ref_img.data[i * 3 + 1] = rgba[i * 4 + 1];
+								ref_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 							}
 						}
-						if (img_params.init_image.data != nullptr && (img_params.init_image.width != img_params.width || img_params.init_image.height != img_params.height))
+						if (ref_img.data != nullptr && (ref_img.width != img_params.width || ref_img.height != img_params.height))
 						{
 							// Prescale the input image to match generation resolution:
-							uint8_t* scaled = stbir_resize_uint8_srgb(img_params.init_image.data, img_params.init_image.width, img_params.init_image.height, 0, (unsigned char*)malloc(img_params.width * img_params.height * 3), img_params.width, img_params.height, 0, STBIR_RGB);
-							img_params.init_image.width = img_params.width;
-							img_params.init_image.height = img_params.height;
-							free(img_params.init_image.data);
-							img_params.init_image.data = scaled;
+							uint8_t* scaled = stbir_resize_uint8_srgb(ref_img.data, ref_img.width, ref_img.height, 0, (unsigned char*)malloc(img_params.width * img_params.height * 3), img_params.width, img_params.height, 0, STBIR_RGB);
+							ref_img.width = img_params.width;
+							ref_img.height = img_params.height;
+							free(ref_img.data);
+							ref_img.data = scaled;
 						}
+						img_params.init_image = ref_img;
+						//img_params.ref_images = &ref_img;
+						//img_params.ref_images_count = 1;
 					}
 
 					sd_image_t* image = nullptr;
@@ -1247,7 +1496,7 @@ void trigger_generation()
 						}
 						push_history(rgba, w, h, true); // save output!
 					}
-					if (img_params.init_image.data) free(img_params.init_image.data);
+					if (ref_img.data) free(ref_img.data);
 				}
 				free_sd_ctx(sd_ctx);
 			}
@@ -1983,7 +2232,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate New Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 103, L"Describe Image");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_VIDEO ? MF_CHECKED : 0), 104, L"Video from Image");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 104, L"Video");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
@@ -2002,7 +2251,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						mode = MODE_IMAGE_DESCRIBE;
 						break;
 					case 104:
-						mode = MODE_IMAGE_VIDEO;
+						mode = MODE_VIDEO;
 						break;
 					}
 
