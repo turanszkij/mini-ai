@@ -74,12 +74,13 @@
 
 enum MODE
 {
-	MODE_IMAGE_GENERATE,
+	MODE_IMAGE_GENERATE_ZIMAGE,
+	MODE_IMAGE_GENERATE_FLUX2,
 	MODE_IMAGE_EDIT,
 	MODE_IMAGE_DESCRIBE,
 	MODE_VIDEO,
 };
-static MODE mode = MODE_IMAGE_GENERATE;
+static MODE mode = MODE_IMAGE_GENERATE_ZIMAGE;
 static wchar_t originalWorkingDir[MAX_PATH];
 static int w = 512, h = 512, c = 3; // properties of the current image
 static unsigned char* rgba = nullptr; // byte data of current image
@@ -174,20 +175,29 @@ void set_title()
 
 void SetGenerateButtonText()
 {
+	if (is_generating.load())
+	{
+		SetWindowText(hBtnGenerate, L"\x23F9 STOP");
+		return;
+	}
+
 	switch (mode)
 	{
 	default:
-	case MODE_IMAGE_GENERATE:
-		SetWindowTextW(hBtnGenerate, L"\u2728 Image \u2728");
+	case MODE_IMAGE_GENERATE_ZIMAGE:
+		SetWindowText(hBtnGenerate, L"\u2728 Z-Image \u2728");
+		break;
+	case MODE_IMAGE_GENERATE_FLUX2:
+		SetWindowText(hBtnGenerate, L"\u2728 F-Image \u2728");
 		break;
 	case MODE_IMAGE_EDIT:
-		SetWindowTextW(hBtnGenerate, L"\u2728 Edit \u2728");
+		SetWindowText(hBtnGenerate, L"\u2728 Edit \u2728");
 		break;
 	case MODE_IMAGE_DESCRIBE:
-		SetWindowTextW(hBtnGenerate, L"\u2728 Describe \u2728");
+		SetWindowText(hBtnGenerate, L"\u2728 Describe \u2728");
 		break;
 	case MODE_VIDEO:
-		SetWindowTextW(hBtnGenerate, L"\u2728 Video \u2728");
+		SetWindowText(hBtnGenerate, L"\u2728 Video \u2728");
 		break;
 	}
 }
@@ -558,9 +568,9 @@ void trigger_generation()
 	cancel_request.store(false);
 	current_errors.clear();
 
-	std::thread([] {
+	std::thread worker([] {
 		is_generating.store(true);
-		SetWindowText(hBtnGenerate, L"\x23F9 STOP");
+		SetGenerateButtonText();
 
 		std::string prompt;
 		const int textbox_length = GetWindowTextLengthW(hEdit);
@@ -579,7 +589,7 @@ void trigger_generation()
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 		CreateDirectory(models_path, 0);
 
-		if (has_image && (mode == MODE_IMAGE_DESCRIBE || mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO))
+		if (has_image && (mode == MODE_IMAGE_DESCRIBE || mode == MODE_VIDEO))
 		{
 			// Use llama library for text generation from image:
 
@@ -713,23 +723,7 @@ void trigger_generation()
 
 						std::string llama_prompt = "<|im_start|>system\n";
 
-						if (mode == MODE_IMAGE_EDIT)
-						{
-							llama_prompt +=
-								"You are an image editing prompt parser. Analyze the input image and the requested modification. "
-								"Generate a single, complete, and self-contained description of the final target image with all modifications fully integrated.\n"
-								"STRICT RULES:\n"
-								"- Describe ONLY the final desired scene.\n"
-								"- NEVER mention the original image, changes, edits, before/after states, or user instructions (e.g., DO NOT say 'changed to', 'instead of', 'modified', 'added').\n"
-								"- Do not repeat the description.\n"
-								"- Do not write internal notes.\n"
-								"- Output plain text only.<|im_end|>\n";
-							llama_prompt += "<|im_start|>user\n";
-							llama_prompt += "Requested modification: ";
-							llama_prompt += prompt.c_str();
-							llama_prompt += "<|im_end|>\n";
-						}
-						else if (mode == MODE_VIDEO)
+						if (mode == MODE_VIDEO)
 						{
 							if (prompt.empty())
 							{
@@ -1040,7 +1034,7 @@ void trigger_generation()
 			FreeLibrary(ggml);
 		}
 
-		if (mode == MODE_IMAGE_GENERATE || mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+		if (mode == MODE_IMAGE_GENERATE_ZIMAGE || mode == MODE_IMAGE_GENERATE_FLUX2 || mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
 		{
 			// Use stable diffusion library for image/video generation:
 
@@ -1084,6 +1078,9 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
 			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
 
+			sd_ctx_params_t sd_params;
+			sd_ctx_params_init(&sd_params);
+
 			char u8_dll_dir[MAX_PATH];
 			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
 			ggml_backend_load_all_from_path(u8_dll_dir);
@@ -1115,7 +1112,7 @@ void trigger_generation()
 				EnsureModelExists(L"https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q3_K_M.gguf?download=true", diffusion_model_path);
 #endif
 			}
-			else
+			else if (mode == MODE_IMAGE_GENERATE_ZIMAGE)
 			{
 				// Z-image
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
@@ -1125,6 +1122,19 @@ void trigger_generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
+			}
+			else if (mode == MODE_IMAGE_GENERATE_FLUX2 || mode == MODE_IMAGE_EDIT)
+			{
+				// Flux 2
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux2-vae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-8B-Q4_K_M.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux-2-klein-9b-Q2_K.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/resolve/main/flux-2-klein-9b-Q2_K.gguf?download=true", diffusion_model_path);
+
+				sd_params.backend = "te=cpu"; // fix for crash on 8GB GPU
 			}
 
 			char u8_vae_path[MAX_PATH] = {};
@@ -1137,8 +1147,6 @@ void trigger_generation()
 			WideCharToMultiByte(CP_UTF8, 0, text_encoder_path, -1, u8_text_encoder_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, diffusion_model_path, -1, u8_diffusion_model_path, MAX_PATH, nullptr, nullptr);
 
-			sd_ctx_params_t sd_params;
-			sd_ctx_params_init(&sd_params);
 			sd_params.vae_path = u8_vae_path;
 			sd_params.llm_path = u8_text_encoder_path;
 			sd_params.t5xxl_path = u8_t5xxl_path;
@@ -1158,7 +1166,7 @@ void trigger_generation()
 			//sd_params.backend = "te=cpu"; // text encode on CPU
 			//sd_params.backend = "vae=cpu"; // VAE decode on CPU
 			//sd_params.backend = "controlnet=cpu"; // control net processing on CPU
-			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
+			//sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
 
 			sd_set_log_callback(sd_log, nullptr);
 			sd_set_progress_callback(sd_callback, nullptr);
@@ -1414,7 +1422,7 @@ void trigger_generation()
 					img_params.width = w2;
 					img_params.height = h2;
 					img_params.prompt = prompt.c_str();
-					img_params.strength = 0.71f; // affects image to image
+					img_params.strength = 1.0f; // affects image to image
 					img_params.batch_count = 1;
 					img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
 
@@ -1466,9 +1474,8 @@ void trigger_generation()
 							free(ref_img.data);
 							ref_img.data = scaled;
 						}
-						img_params.init_image = ref_img;
-						//img_params.ref_images = &ref_img;
-						//img_params.ref_images_count = 1;
+						img_params.ref_images = &ref_img;
+						img_params.ref_images_count = 1;
 					}
 
 					sd_image_t* image = nullptr;
@@ -1521,7 +1528,11 @@ void trigger_generation()
 		progress = 0;
 		SetGenerateButtonText();
 		redraw();
-	}).detach();
+	});
+
+	SetThreadDescription((HANDLE)worker.native_handle(), L"ai-generation");
+
+	worker.detach();
 }
 
 void handle_load_image(HWND hWnd)
@@ -2229,10 +2240,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
 				{
 					HMENU hMenu = CreatePopupMenu();
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate New Image");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 103, L"Describe Image");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 104, L"Video");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (type: Z-Image)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (type: Flux 2)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 103, L"Edit Image (type: Flux 2)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 104, L"Describe Image (type: Qwen 3 VL)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 105, L"Video (type: Lingbot)");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
@@ -2242,15 +2254,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					{
 					default:
 					case 101:
-						mode = MODE_IMAGE_GENERATE;
+						mode = MODE_IMAGE_GENERATE_ZIMAGE;
 						break;
 					case 102:
-						mode = MODE_IMAGE_EDIT;
+						mode = MODE_IMAGE_GENERATE_FLUX2;
 						break;
 					case 103:
-						mode = MODE_IMAGE_DESCRIBE;
+						mode = MODE_IMAGE_EDIT;
 						break;
 					case 104:
+						mode = MODE_IMAGE_DESCRIBE;
+						break;
+					case 105:
 						mode = MODE_VIDEO;
 						break;
 					}
