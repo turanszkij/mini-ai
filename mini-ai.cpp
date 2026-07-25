@@ -937,26 +937,30 @@ void trigger_generation()
 
 					vid_params.width = ((w2 / 2) / 16) * 16;
 					vid_params.height = ((h2 / 2) / 16) * 16;
-					vid_params.prompt = text.c_str();
+
+					if (!text.empty())
+					{
+						vid_params.prompt = text.c_str();
+					}
 
 					vid_params.fps = 8;
 					vid_params.video_frames = vid_params.fps * 4 + 1; // + 1 start frame
 
-					vid_params.strength = 0.5f;
-					vid_params.vace_strength = 0.5f;
+					vid_params.strength = 0.6f;
+					vid_params.vace_strength = 0.76f;
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
 
 					sd_sample_params_init(&vid_params.sample_params);
 					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-					vid_params.sample_params.sample_steps = 20;
+					vid_params.sample_params.sample_steps = 30;
 					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 					vid_params.sample_params.eta = 0.0f;
-					vid_params.sample_params.flow_shift = 2.0f;
+					vid_params.sample_params.flow_shift = 4.0f;
 
 					vid_params.sample_params.guidance.txt_cfg = 4.0f;
-					vid_params.sample_params.guidance.img_cfg = 0.5f;
+					vid_params.sample_params.guidance.img_cfg = 1.0f;
 					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
 
 					if (rgba2 != nullptr)
