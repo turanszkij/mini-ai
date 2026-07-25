@@ -1155,10 +1155,10 @@ void trigger_generation()
 			sd_params.n_threads = -1;
 			sd_params.rng_type = STD_DEFAULT_RNG;
 			sd_params.vae_conv_direct = true;
+			//sd_params.flash_attn = true;
 
 			if (mode == MODE_VIDEO)
 			{
-				//sd_params.flash_attn = true;
 				sd_params.prediction = FLOW_PRED;
 			}
 
@@ -1166,7 +1166,7 @@ void trigger_generation()
 			//sd_params.backend = "te=cpu"; // text encode on CPU
 			//sd_params.backend = "vae=cpu"; // VAE decode on CPU
 			//sd_params.backend = "controlnet=cpu"; // control net processing on CPU
-			//sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
+			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
 
 			sd_set_log_callback(sd_log, nullptr);
 			sd_set_progress_callback(sd_callback, nullptr);
@@ -1465,15 +1465,10 @@ void trigger_generation()
 								ref_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 							}
 						}
-						if (ref_img.data != nullptr && (ref_img.width != img_params.width || ref_img.height != img_params.height))
-						{
-							// Prescale the input image to match generation resolution:
-							uint8_t* scaled = stbir_resize_uint8_srgb(ref_img.data, ref_img.width, ref_img.height, 0, (unsigned char*)malloc(img_params.width * img_params.height * 3), img_params.width, img_params.height, 0, STBIR_RGB);
-							ref_img.width = img_params.width;
-							ref_img.height = img_params.height;
-							free(ref_img.data);
-							ref_img.data = scaled;
-						}
+
+						//img_params.init_image = ref_img;
+
+						// Note: image edit is much better with ref_images instead of using init_image, but requires special support from the model
 						img_params.ref_images = &ref_img;
 						img_params.ref_images_count = 1;
 					}
@@ -1530,7 +1525,7 @@ void trigger_generation()
 		redraw();
 	});
 
-	SetThreadDescription((HANDLE)worker.native_handle(), L"ai-generation");
+	SetThreadDescription((HANDLE)worker.native_handle(), L"AI");
 
 	worker.detach();
 }
@@ -2240,11 +2235,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
 				{
 					HMENU hMenu = CreatePopupMenu();
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (type: Z-Image)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (type: Flux 2)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 103, L"Edit Image (type: Flux 2)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 104, L"Describe Image (type: Qwen 3 VL)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 105, L"Video (type: Lingbot)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (model: Z-Image)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (model: Flux 2)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 103, L"Edit Image (model: Flux 2)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 104, L"Describe Image (model: Qwen 3 VL)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 105, L"Video (model: Lingbot)");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
