@@ -938,11 +938,6 @@ void trigger_generation()
 					vid_params.width = ((w2 / 2) / 16) * 16;
 					vid_params.height = ((h2 / 2) / 16) * 16;
 
-					if (!text.empty())
-					{
-						vid_params.prompt = text.c_str();
-					}
-
 					vid_params.fps = 8;
 					vid_params.video_frames = vid_params.fps * 4 + 1; // + 1 start frame
 
@@ -959,9 +954,19 @@ void trigger_generation()
 					vid_params.sample_params.eta = 0.0f;
 					vid_params.sample_params.flow_shift = 4.0f;
 
-					vid_params.sample_params.guidance.txt_cfg = 4.0f;
-					vid_params.sample_params.guidance.img_cfg = 1.0f;
 					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
+
+					if (text.empty())
+					{
+						vid_params.sample_params.guidance.txt_cfg = 0.0f;
+						vid_params.sample_params.guidance.img_cfg = 0.0f;
+					}
+					else
+					{
+						vid_params.sample_params.guidance.txt_cfg = 4.0f;
+						vid_params.sample_params.guidance.img_cfg = 1.0f;
+						vid_params.prompt = text.c_str();
+					}
 
 					if (rgba2 != nullptr)
 					{
