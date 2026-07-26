@@ -1091,7 +1091,7 @@ void trigger_generation()
 					vid_params.height = (h2 / 16) * 16;
 
 					vid_params.fps = 24;
-					vid_params.video_frames = vid_params.fps * 2 + 1; // 4 sec + 1 start frame
+					vid_params.video_frames = vid_params.fps * 2 + 1; // 2 sec + 1 start frame
 
 					vid_params.strength = 0.5f;
 					vid_params.vace_strength = 0.5f;
