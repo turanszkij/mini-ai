@@ -1419,18 +1419,26 @@ void trigger_generation()
 				{
 					sd_img_gen_params_t img_params;
 					sd_img_gen_params_init(&img_params);
-					img_params.width = w2;
-					img_params.height = h2;
+					img_params.width = (w2 / 16) * 16;
+					img_params.height = (h2 / 16) * 16;
 					img_params.prompt = prompt.c_str();
 					img_params.strength = 1.0f; // affects image to image
 					img_params.batch_count = 1;
 					img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
 
 					sd_sample_params_init(&img_params.sample_params);
-					img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-					img_params.sample_params.sample_steps = 8;
-					img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 					img_params.sample_params.eta = 0.0f;
+					img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+					if (mode == MODE_IMAGE_GENERATE_ZIMAGE)
+					{
+						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						img_params.sample_params.sample_steps = 8;
+					}
+					else if (mode == MODE_IMAGE_GENERATE_FLUX2 || mode == MODE_IMAGE_EDIT)
+					{
+						img_params.sample_params.scheduler = FLUX2_SCHEDULER;
+						img_params.sample_params.sample_steps = 4;
+					}
 
 					img_params.sample_params.guidance.txt_cfg = 1.0f;
 					img_params.sample_params.guidance.img_cfg = 1.0f;
@@ -1465,9 +1473,6 @@ void trigger_generation()
 								ref_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 							}
 						}
-
-						//img_params.init_image = ref_img;
-
 						// Note: image edit is much better with ref_images instead of using init_image, but requires special support from the model
 						img_params.ref_images = &ref_img;
 						img_params.ref_images_count = 1;
