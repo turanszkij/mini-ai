@@ -32,6 +32,7 @@
 #include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <vector>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_WINDOWS_UTF8
@@ -1089,8 +1090,8 @@ void trigger_generation()
 					vid_params.width = (w2 / 16) * 16;
 					vid_params.height = (h2 / 16) * 16;
 
-					vid_params.fps = 8;
-					vid_params.video_frames = vid_params.fps * 4 + 1; // 4 sec + 1 start frame
+					vid_params.fps = 24;
+					vid_params.video_frames = vid_params.fps * 2 + 1; // 4 sec + 1 start frame
 
 					vid_params.strength = 0.5f;
 					vid_params.vace_strength = 0.5f;
@@ -1453,7 +1454,6 @@ void handle_load_image(HWND hWnd)
 		}
 	}
 }
-
 void handle_save_image(HWND hWnd)
 {
 	if (!rgba2)
@@ -1468,7 +1468,13 @@ void handle_save_image(HWND hWnd)
 	ofn.hwndOwner = hWnd;
 	ofn.lpstrFile = szFile;
 	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
-	ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0";
+
+	// Default: PNG (Index 1), Supported: ICO, JPG, BMP, TGA
+	ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0"
+		L"ICO Icon (*.ico)\0*.ico\0"
+		L"JPEG Image (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0"
+		L"BMP Image (*.bmp)\0*.bmp\0"
+		L"TGA Image (*.tga)\0*.tga\0";
 	ofn.nFilterIndex = 1;
 	ofn.lpstrDefExt = L"png";
 	ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
@@ -1478,7 +1484,132 @@ void handle_save_image(HWND hWnd)
 		char filename[MAX_PATH] = {};
 		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
 
-		int success = stbi_write_png(filename, w2, h2 - splitter_thickness, 4, rgba2, w2 * 4);
+		int width = w2;
+		int height = h2;
+		bool success = false;
+
+		std::string str_filename(filename);
+
+		auto check_extension = [](const std::string& str, const std::string& ext) {
+			return str.size() >= ext.size() && str.compare(str.size() - ext.size(), ext.size(), ext) == 0;
+		};
+
+		// 1. Multi-Resolution ICO
+		if (ofn.nFilterIndex == 2 || check_extension(str_filename, ".ico"))
+		{
+			const std::vector<int> targetSizes = { 256, 128, 64, 48, 32, 16 };
+
+			struct IconFrame {
+				int size;
+				int png_len;
+				unsigned char* png_bytes;
+			};
+
+			std::vector<IconFrame> frames;
+
+			for (int size : targetSizes)
+			{
+				if (size > width && size > height && size != 256) continue;
+
+				const unsigned char* srcPtr = rgba2;
+				std::vector<unsigned char> resized_buffer;
+
+				if (width != size || height != size)
+				{
+					resized_buffer.resize(size * size * 4);
+					stbir_resize_uint8_srgb(
+						rgba2, width, height, width * 4,
+						resized_buffer.data(), size, size, size * 4,
+						STBIR_RGBA
+					);
+					srcPtr = resized_buffer.data();
+				}
+
+				int png_len = 0;
+				unsigned char* png_bytes = stbi_write_png_to_mem(srcPtr, size * 4, size, size, 4, &png_len);
+				if (png_bytes)
+				{
+					frames.push_back({ size, png_len, png_bytes });
+				}
+			}
+
+			if (!frames.empty())
+			{
+#pragma pack(push, 1)
+				struct ICOHeader {
+					uint16_t idReserved = 0;
+					uint16_t idType = 1; // 1 = ICO
+					uint16_t idCount;
+				};
+
+				struct ICONDIRENTRY {
+					uint8_t  bWidth;
+					uint8_t  bHeight;
+					uint8_t  bColorCount = 0;
+					uint8_t  bReserved = 0;
+					uint16_t wPlanes = 1;
+					uint16_t wBitCount = 32;
+					uint32_t dwBytesInRes;
+					uint32_t dwImageOffset;
+				};
+#pragma pack(pop)
+
+				ICOHeader header;
+				header.idCount = static_cast<uint16_t>(frames.size());
+
+				uint32_t currentOffset = sizeof(ICOHeader) + static_cast<uint32_t>(frames.size() * sizeof(ICONDIRENTRY));
+
+				std::vector<ICONDIRENTRY> entries;
+				for (const auto& frame : frames)
+				{
+					ICONDIRENTRY entry;
+					entry.bWidth = (frame.size >= 256) ? 0 : static_cast<uint8_t>(frame.size);
+					entry.bHeight = (frame.size >= 256) ? 0 : static_cast<uint8_t>(frame.size);
+					entry.dwBytesInRes = static_cast<uint32_t>(frame.png_len);
+					entry.dwImageOffset = currentOffset;
+
+					entries.push_back(entry);
+					currentOffset += frame.png_len;
+				}
+
+				std::ofstream file(filename, std::ios::binary);
+				if (file.is_open())
+				{
+					file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+					file.write(reinterpret_cast<const char*>(entries.data()), entries.size() * sizeof(ICONDIRENTRY));
+
+					for (auto& frame : frames)
+					{
+						file.write(reinterpret_cast<const char*>(frame.png_bytes), frame.png_len);
+					}
+
+					success = file.good();
+					file.close();
+				}
+
+				for (auto& frame : frames)
+				{
+					STBIW_FREE(frame.png_bytes);
+				}
+			}
+		}
+		else if (ofn.nFilterIndex == 3 || check_extension(str_filename, ".jpg") || check_extension(str_filename, ".jpeg"))
+		{
+			success = stbi_write_jpg(filename, width, height, 4, rgba2, 90) != 0;
+		}
+		else if (ofn.nFilterIndex == 4 || check_extension(str_filename, ".bmp"))
+		{
+			success = stbi_write_bmp(filename, width, height, 4, rgba2) != 0;
+		}
+		else if (ofn.nFilterIndex == 5 || check_extension(str_filename, ".tga"))
+		{
+			success = stbi_write_tga(filename, width, height, 4, rgba2) != 0;
+		}
+		else
+		{
+			success = stbi_write_png(filename, width, height, 4, rgba2, width * 4) != 0;
+		}
+
 		if (!success)
 		{
 			MessageBoxW(hWnd, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
@@ -1488,7 +1619,7 @@ void handle_save_image(HWND hWnd)
 
 void handle_copy_image(HWND hWnd)
 {
-	int draw_height = h2 - splitter_thickness;
+	int draw_height = h2;
 	if (!rgba2 || w2 <= 0 || draw_height <= 0)
 	{
 		MessageBoxW(hWnd, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
