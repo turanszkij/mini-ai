@@ -591,27 +591,14 @@ void trigger_generation()
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 		CreateDirectory(models_path, 0);
 
-		if (has_image && mode == MODE_ASK)
+		if (mode == MODE_ASK)
 		{
-			// Use llama library for text generation from image:
-
-			wchar_t model_path[MAX_PATH] = {};
-			wchar_t mmproj_path[MAX_PATH] = {};
-			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
-			_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
-
-			char u8_model_path[MAX_PATH] = {};
-			char u8_mmproj_path[MAX_PATH] = {};
-
-			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
-			WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
-
-			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
-			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
-
 			wchar_t dll_dir[MAX_PATH] = {};
 			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
 			SetDllDirectory(dll_dir);
+
+			char u8_dll_dir[MAX_PATH];
+			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
 
 			HMODULE llama = LoadLibrary(L"llama.dll");
 			if (llama == nullptr)
@@ -624,14 +611,6 @@ void trigger_generation()
 			{
 				FreeLibrary(llama);
 				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
-				return;
-			}
-			HMODULE mtmd = LoadLibrary(L"mtmd.dll");
-			if (mtmd == nullptr)
-			{
-				FreeLibrary(llama);
-				FreeLibrary(ggml);
-				MessageBoxA(window, "mtmd.dll couldn't be loaded!", "Error!", 0);
 				return;
 			}
 
@@ -661,6 +640,10 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(llama_free, llama);
 			LINK_DLL_FUNCTION(llama_backend_free, llama);
 			LINK_DLL_FUNCTION(llama_log_set, llama);
+			LINK_DLL_FUNCTION(llama_batch_init, llama);
+			LINK_DLL_FUNCTION(llama_batch_free, llama);
+			LINK_DLL_FUNCTION(llama_get_logits_ith, llama);
+			LINK_DLL_FUNCTION(llama_tokenize, llama);
 
 			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
 			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
@@ -669,323 +652,280 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
 			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
 
-			LINK_DLL_FUNCTION(mtmd_context_params_default, mtmd);
-			LINK_DLL_FUNCTION(mtmd_init_from_file, mtmd);
-			LINK_DLL_FUNCTION(mtmd_bitmap_init, mtmd);
-			LINK_DLL_FUNCTION(mtmd_default_marker, mtmd);
-			LINK_DLL_FUNCTION(mtmd_input_chunks_init, mtmd);
-			LINK_DLL_FUNCTION(mtmd_tokenize, mtmd);
-			LINK_DLL_FUNCTION(mtmd_helper_eval_chunks, mtmd);
-			LINK_DLL_FUNCTION(mtmd_input_chunks_free, mtmd);
-			LINK_DLL_FUNCTION(mtmd_bitmap_free, mtmd);
-			LINK_DLL_FUNCTION(mtmd_free, mtmd);
-			LINK_DLL_FUNCTION(mtmd_log_set, mtmd);
-
-			char u8_dll_dir[MAX_PATH];
-			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
 			ggml_backend_load_all_from_path(u8_dll_dir);
-
 			llama_log_set(llama_callback, nullptr);
-			mtmd_log_set(llama_callback, nullptr);
 
-			llama_model_params model_params = llama_model_default_params();
-			model_params.n_gpu_layers = -1;
-			model_params.progress_callback = my_llama_progress_callback;
-
-			llama_context_params ctx_params = llama_context_default_params();
-			ctx_params.n_ctx = 8192;
-			ctx_params.n_batch = 512;
-
-			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
-			if (model != nullptr && !cancel_request.load())
+			if (has_image)
 			{
-				llama_context* ctx = llama_init_from_model(model, ctx_params);
-				if (ctx != nullptr && !cancel_request.load())
+				// Use llama library for text generation from image:
+
+				wchar_t model_path[MAX_PATH] = {};
+				wchar_t mmproj_path[MAX_PATH] = {};
+				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+				_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
+
+				char u8_model_path[MAX_PATH] = {};
+				char u8_mmproj_path[MAX_PATH] = {};
+
+				WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
+				WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
+
+				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
+				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
+
+				HMODULE mtmd = LoadLibrary(L"mtmd.dll");
+				if (mtmd == nullptr)
 				{
-					mtmd_context_params mtmd_params = mtmd_context_params_default();
-					mtmd_params.n_threads = 4;
-					mtmd_params.use_gpu = true;
-					mtmd_params.progress_callback = my_llama_progress_callback;
-					mtmd_params.image_min_tokens = 1024; // qwen 3 vl important
+					FreeLibrary(llama);
+					FreeLibrary(ggml);
+					MessageBoxA(window, "mtmd.dll couldn't be loaded!", "Error!", 0);
+					return;
+				}
 
-					mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
-					if (ctx_mtmd != nullptr && !cancel_request.load())
+				LINK_DLL_FUNCTION(mtmd_context_params_default, mtmd);
+				LINK_DLL_FUNCTION(mtmd_init_from_file, mtmd);
+				LINK_DLL_FUNCTION(mtmd_bitmap_init, mtmd);
+				LINK_DLL_FUNCTION(mtmd_default_marker, mtmd);
+				LINK_DLL_FUNCTION(mtmd_input_chunks_init, mtmd);
+				LINK_DLL_FUNCTION(mtmd_tokenize, mtmd);
+				LINK_DLL_FUNCTION(mtmd_helper_eval_chunks, mtmd);
+				LINK_DLL_FUNCTION(mtmd_input_chunks_free, mtmd);
+				LINK_DLL_FUNCTION(mtmd_bitmap_free, mtmd);
+				LINK_DLL_FUNCTION(mtmd_free, mtmd);
+				LINK_DLL_FUNCTION(mtmd_log_set, mtmd);
+
+				mtmd_log_set(llama_callback, nullptr);
+
+				llama_model_params model_params = llama_model_default_params();
+				model_params.n_gpu_layers = -1;
+				model_params.progress_callback = my_llama_progress_callback;
+
+				llama_context_params ctx_params = llama_context_default_params();
+				ctx_params.n_ctx = 8192;
+				ctx_params.n_batch = 512;
+
+				llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
+				if (model != nullptr && !cancel_request.load())
+				{
+					llama_context* ctx = llama_init_from_model(model, ctx_params);
+					if (ctx != nullptr && !cancel_request.load())
 					{
-						// Convert RGBA -> RGB
-						std::vector<uint8_t> rgb_data(w * h * 3);
-						if (rgba)
-						{
-							for (int i = 0; i < w * h; ++i) {
-								rgb_data[i * 3 + 0] = rgba[i * 4 + 0];
-								rgb_data[i * 3 + 1] = rgba[i * 4 + 1];
-								rgb_data[i * 3 + 2] = rgba[i * 4 + 2];
-							}
-						}
-						mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
+						mtmd_context_params mtmd_params = mtmd_context_params_default();
+						mtmd_params.n_threads = 4;
+						mtmd_params.use_gpu = true;
+						mtmd_params.progress_callback = my_llama_progress_callback;
+						mtmd_params.image_min_tokens = 1024; // qwen 3 vl important
 
+						mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
+						if (ctx_mtmd != nullptr && !cancel_request.load())
+						{
+							// Convert RGBA -> RGB
+							std::vector<uint8_t> rgb_data(w * h * 3);
+							if (rgba)
+							{
+								for (int i = 0; i < w * h; ++i) {
+									rgb_data[i * 3 + 0] = rgba[i * 4 + 0];
+									rgb_data[i * 3 + 1] = rgba[i * 4 + 1];
+									rgb_data[i * 3 + 2] = rgba[i * 4 + 2];
+								}
+							}
+							mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
+
+							std::string llama_prompt = "<|im_start|>system\n";
+							llama_prompt +=
+								"You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n"
+								"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+							llama_prompt += "<|im_start|>user\n";
+							if (prompt.empty())
+							{
+								llama_prompt += "Describe the image in detail";
+							}
+							else
+							{
+								llama_prompt += prompt.c_str();
+							}
+							llama_prompt += "\n";
+							llama_prompt += "<|im_end|>\n";
+							llama_prompt += "<|im_start|>assistant\n";
+
+							const char* image_marker = mtmd_default_marker();
+							std::string full_text = std::string(image_marker) + llama_prompt;
+
+							mtmd_input_text input_text = {};
+							input_text.text = full_text.c_str();
+							input_text.text_len = full_text.length();
+							input_text.add_special = true;
+							input_text.parse_special = true;
+
+							mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+
+							const mtmd_bitmap* bitmaps[1] = { bitmap };
+
+							if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) == 0)
+							{
+								llama_pos n_past = 0;
+								if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) == 0)
+								{
+									llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+									llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
+									llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
+									llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
+									llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.85f));
+									llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+
+									llama_token new_token_id;
+									const struct llama_vocab* vocab = llama_model_get_vocab(model);
+									bool started_generating = false;
+									std::string result_text;
+									while (n_past < (llama_pos)ctx_params.n_ctx && !cancel_request.load())
+									{
+										new_token_id = llama_sampler_sample(smpl, ctx, -1);
+
+										if (started_generating && llama_vocab_is_eog(vocab, new_token_id))
+											break;
+
+										char buf[256];
+										int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false);
+
+										if (n > 0) {
+											std::string piece(buf, n);
+
+											// Skip leading whitespace/newlines if we haven't started yet
+											if (!started_generating && (piece == "\n" || piece == " "))
+											{
+												// continue; // Optional: keep skipping until you hit real text
+											}
+											else
+											{
+												started_generating = true;
+												result_text += piece;
+											}
+										}
+
+										llama_batch batch = llama_batch_get_one(&new_token_id, 1);
+										llama_decode(ctx, batch);
+										n_past += 1;
+
+										post_description(result_text);
+									}
+									post_description(result_text);
+
+									llama_sampler_free(smpl);
+								}
+							}
+							mtmd_input_chunks_free(chunks);
+							mtmd_bitmap_free(bitmap);
+						}
+						mtmd_free(ctx_mtmd);
+					}
+					llama_free(ctx);
+				}
+				final_errors = progress_errors;
+
+				llama_model_free(model);
+				llama_backend_free();
+
+				FreeLibrary(mtmd);
+			}
+			else
+			{
+				// Use llama library for text generation from user prompt but without image:
+
+				wchar_t model_path[MAX_PATH] = {};
+				char u8_model_path[MAX_PATH] = {};
+				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+				WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
+				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
+
+				llama_model_params model_params = llama_model_default_params();
+				model_params.n_gpu_layers = -1;
+				model_params.progress_callback = my_llama_progress_callback;
+
+				llama_context_params ctx_params = llama_context_default_params();
+				ctx_params.n_ctx = 4096;
+				ctx_params.n_batch = 512;
+
+				llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
+				if (model != nullptr && !cancel_request.load())
+				{
+					llama_context* ctx = llama_init_from_model(model, ctx_params);
+					if (ctx != nullptr && !cancel_request.load())
+					{
 						std::string llama_prompt = "<|im_start|>system\n";
 						llama_prompt +=
-							"You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n"
+							"You are a helpful assistant, answer the user's questions or follow the orders.\n"
 							"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
 						llama_prompt += "<|im_start|>user\n";
-						if (prompt.empty())
-						{
-							llama_prompt += "Describe the image in detail";
-						}
-						else
-						{
-							llama_prompt += prompt.c_str();
-						}
+						llama_prompt += prompt.c_str();
 						llama_prompt += "\n";
 						llama_prompt += "<|im_end|>\n";
 						llama_prompt += "<|im_start|>assistant\n";
 
-						const char* image_marker = mtmd_default_marker();
-						std::string full_text = std::string(image_marker) + llama_prompt;
+						const llama_vocab* vocab = llama_model_get_vocab(model);
 
-						mtmd_input_text input_text = {};
-						input_text.text = full_text.c_str();
-						input_text.text_len = full_text.length();
-						input_text.add_special = true;
-						input_text.parse_special = true;
-
-						mtmd_input_chunks* chunks = mtmd_input_chunks_init();
-
-						const mtmd_bitmap* bitmaps[1] = { bitmap };
-
-						if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) == 0)
+						int n_prompt_tokens = -llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), NULL, 0, true, true);
+						std::vector<llama_token> prompt_tokens(n_prompt_tokens);
+						if (llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), prompt_tokens.data(), (int)prompt_tokens.size(), true, true) >= 0)
 						{
-							llama_pos n_past = 0;
-							if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) == 0)
+							llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+							llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+
+							llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
+							for (size_t i = 0; i < prompt_tokens.size(); i++) {
+								batch.token[i] = prompt_tokens[i];
+								batch.pos[i] = (llama_pos)i;
+								batch.n_seq_id[i] = 1;
+								batch.seq_id[i][0] = 0;
+								batch.logits[i] = (i == prompt_tokens.size() - 1);
+							}
+							batch.n_tokens = (int32_t)prompt_tokens.size();
+
+							if (llama_decode(ctx, batch) == 0)
 							{
-								llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-								llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
-								llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
-								llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
-								llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.85f));
-								llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+								std::string result_text = "";
+								int n_cur = batch.n_tokens;
+								int n_decode_max = 1024;
 
-								llama_token new_token_id;
-								const struct llama_vocab* vocab = llama_model_get_vocab(model);
-								bool started_generating = false;
-								std::string result_text;
-								while (n_past < (llama_pos)ctx_params.n_ctx && !cancel_request.load())
+								while (n_cur < n_decode_max && !cancel_request.load())
 								{
-									new_token_id = llama_sampler_sample(smpl, ctx, -1);
-
-									if (started_generating && llama_vocab_is_eog(vocab, new_token_id))
+									llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
+									if (llama_vocab_is_eog(vocab, new_token_id)) {
 										break;
-
-									char buf[256];
-									int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false);
-
+									}
+									char piece_buf[128] = { 0 };
+									int n = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf), 0, true);
 									if (n > 0) {
-										std::string piece(buf, n);
-
-										// Skip leading whitespace/newlines if we haven't started yet
-										if (!started_generating && (piece == "\n" || piece == " "))
-										{
-											// continue; // Optional: keep skipping until you hit real text
-										}
-										else
-										{
-											started_generating = true;
-											result_text += piece;
-										}
+										result_text.append(piece_buf, n);
 									}
 
-									llama_batch batch = llama_batch_get_one(&new_token_id, 1);
-									llama_decode(ctx, batch);
-									n_past += 1;
+									batch.n_tokens = 0;
+									batch.token[0] = new_token_id;
+									batch.pos[0] = n_cur;
+									batch.n_seq_id[0] = 1;
+									batch.seq_id[0][0] = 0;
+									batch.logits[0] = true;
+									batch.n_tokens = 1;
+
+									n_cur++;
+
+									if (llama_decode(ctx, batch) != 0)
+										break;
 
 									post_description(result_text);
 								}
 								post_description(result_text);
-
-								llama_sampler_free(smpl);
 							}
+
+							llama_batch_free(batch);
+							llama_sampler_free(smpl);
 						}
-						mtmd_input_chunks_free(chunks);
-						mtmd_bitmap_free(bitmap);
-					}
-					mtmd_free(ctx_mtmd);
-				}
-				llama_free(ctx);
-			}
-			final_errors = progress_errors;
-
-			llama_model_free(model);
-			llama_backend_free();
-
-			while (true)
-			{
-				size_t n = ggml_backend_reg_count();
-				if (n == 0) break;
-				ggml_backend_reg_t reg = ggml_backend_reg_get(n - 1);
-				if (reg)
-				{
-					ggml_backend_unload(reg);
-				}
-			}
-
-			FreeLibrary(llama);
-			FreeLibrary(ggml);
-			FreeLibrary(mtmd);
-		}
-		
-		if (!has_image && mode == MODE_ASK)
-		{
-			// Use llama library for text generation from user prompt but without image:
-
-			wchar_t model_path[MAX_PATH] = {};
-			char u8_model_path[MAX_PATH] = {};
-			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
-			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
-			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
-
-			wchar_t dll_dir[MAX_PATH] = {};
-			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
-			SetDllDirectory(dll_dir);
-
-			HMODULE llama = LoadLibrary(L"llama.dll");
-			if (llama == nullptr)
-			{
-				MessageBoxA(window, "llama.dll couldn't be loaded!", "Error!", 0);
-				return;
-			}
-			HMODULE ggml = LoadLibrary(L"ggml.dll");
-			if (ggml == nullptr)
-			{
-				FreeLibrary(llama);
-				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
-				return;
-			}
-
-			LINK_DLL_FUNCTION(llama_model_default_params, llama);
-			LINK_DLL_FUNCTION(llama_context_default_params, llama);
-			LINK_DLL_FUNCTION(llama_model_load_from_file, llama);
-			LINK_DLL_FUNCTION(llama_init_from_model, llama);
-			LINK_DLL_FUNCTION(llama_sampler_chain_init, llama);
-			LINK_DLL_FUNCTION(llama_sampler_chain_default_params, llama);
-			LINK_DLL_FUNCTION(llama_sampler_chain_add, llama);
-			LINK_DLL_FUNCTION(llama_sampler_init_greedy, llama);
-			LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
-			LINK_DLL_FUNCTION(llama_sampler_sample, llama);
-			LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
-			LINK_DLL_FUNCTION(llama_token_to_piece, llama);
-			LINK_DLL_FUNCTION(llama_batch_get_one, llama);
-			LINK_DLL_FUNCTION(llama_decode, llama);
-			LINK_DLL_FUNCTION(llama_sampler_free, llama);
-			LINK_DLL_FUNCTION(llama_model_free, llama);
-			LINK_DLL_FUNCTION(llama_free, llama);
-			LINK_DLL_FUNCTION(llama_backend_free, llama);
-			LINK_DLL_FUNCTION(llama_log_set, llama);
-			LINK_DLL_FUNCTION(llama_tokenize, llama);
-			LINK_DLL_FUNCTION(llama_batch_init, llama);
-			LINK_DLL_FUNCTION(llama_batch_free, llama);
-			LINK_DLL_FUNCTION(llama_get_logits_ith, llama);
-
-			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
-			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
-			LINK_DLL_FUNCTION(ggml_backend_load, ggml);
-			LINK_DLL_FUNCTION(ggml_backend_unload, ggml);
-			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
-			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
-
-			char u8_dll_dir[MAX_PATH];
-			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
-			ggml_backend_load_all_from_path(u8_dll_dir);
-
-			llama_log_set(llama_callback, nullptr);
-
-			llama_model_params model_params = llama_model_default_params();
-			model_params.n_gpu_layers = -1;
-			model_params.progress_callback = my_llama_progress_callback;
-
-			llama_context_params ctx_params = llama_context_default_params();
-			ctx_params.n_ctx = 4096;
-			ctx_params.n_batch = 512;
-
-			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
-			if (model != nullptr && !cancel_request.load())
-			{
-				llama_context* ctx = llama_init_from_model(model, ctx_params);
-				if (ctx != nullptr && !cancel_request.load())
-				{
-					std::string llama_prompt = "<|im_start|>system\n";
-					llama_prompt +=
-						"You are a helpful assistant, answer the user's questions or follow the orders.\n"
-						"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
-					llama_prompt += "<|im_start|>user\n";
-					llama_prompt += prompt.c_str();
-					llama_prompt += "\n";
-					llama_prompt += "<|im_end|>\n";
-					llama_prompt += "<|im_start|>assistant\n";
-
-					const llama_vocab* vocab = llama_model_get_vocab(model);
-
-					int n_prompt_tokens = -llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), NULL, 0, true, true);
-					std::vector<llama_token> prompt_tokens(n_prompt_tokens);
-					if (llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), prompt_tokens.data(), (int)prompt_tokens.size(), true, true) >= 0)
-					{
-						llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-						llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
-
-						llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
-						for (size_t i = 0; i < prompt_tokens.size(); i++) {
-							batch.token[i] = prompt_tokens[i];
-							batch.pos[i] = (llama_pos)i;
-							batch.n_seq_id[i] = 1;
-							batch.seq_id[i][0] = 0;
-							batch.logits[i] = (i == prompt_tokens.size() - 1);
-						}
-						batch.n_tokens = (int32_t)prompt_tokens.size();
-
-						if (llama_decode(ctx, batch) == 0)
-						{
-							std::string result_text = "";
-							int n_cur = batch.n_tokens;
-							int n_decode_max = 1024;
-
-							while (n_cur < n_decode_max && !cancel_request.load()) 
-							{
-								llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
-								if (llama_vocab_is_eog(vocab, new_token_id)) {
-									break;
-								}
-								char piece_buf[128] = { 0 };
-								int n = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf), 0, true);
-								if (n > 0) {
-									result_text.append(piece_buf, n);
-								}
-
-								batch.n_tokens = 0;
-								batch.token[0] = new_token_id;
-								batch.pos[0] = n_cur;
-								batch.n_seq_id[0] = 1;
-								batch.seq_id[0][0] = 0;
-								batch.logits[0] = true;
-								batch.n_tokens = 1;
-
-								n_cur++;
-
-								if (llama_decode(ctx, batch) != 0)
-									break;
-
-								post_description(result_text);
-							}
-							post_description(result_text);
-						}
-
-						llama_batch_free(batch);
-						llama_sampler_free(smpl);
 					}
 				}
-			}
-			final_errors = progress_errors;
+				final_errors = progress_errors;
 
-			llama_model_free(model);
-			llama_backend_free();
+				llama_model_free(model);
+				llama_backend_free();
+			}
 
 			while (true)
 			{
@@ -1001,8 +941,7 @@ void trigger_generation()
 			FreeLibrary(llama);
 			FreeLibrary(ggml);
 		}
-
-		if (mode == MODE_IMAGE_GENERATE_ZIMAGE || mode == MODE_IMAGE_GENERATE_FLUX2 || mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+		else
 		{
 			// Use stable diffusion library for image/video generation:
 
