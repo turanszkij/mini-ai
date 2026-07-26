@@ -589,7 +589,7 @@ void trigger_generation()
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 		CreateDirectory(models_path, 0);
 
-		if (has_image && (mode == MODE_IMAGE_DESCRIBE || mode == MODE_VIDEO))
+		if (has_image && mode == MODE_IMAGE_DESCRIBE)
 		{
 			// Use llama library for text generation from image:
 
@@ -722,40 +722,11 @@ void trigger_generation()
 						mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
 
 						std::string llama_prompt = "<|im_start|>system\n";
-
-						if (mode == MODE_VIDEO)
-						{
-							if (prompt.empty())
-							{
-								llama_prompt +=
-									"You are a video scene director for LingBot-Video. Analyze the provided initial frame and write a complete visual description "
-									"of a natural 5-second video sequence starting from this image. Infer plausible physical dynamics based on the scene (e.g., subtle wind in hair/clothing, water ripples, ambient light shifts, or gentle camera panning).\n"
-									"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
-								llama_prompt += "<|im_start|>user\n";
-								llama_prompt += "Generate natural video motion for this image.<|im_end|>\n";
-							}
-							else
-							{
-								llama_prompt +=
-									"You are a video scene director for LingBot-Video. Analyze the provided initial frame and write a complete visual description "
-									"of the video scene. Describe the subject, ambient motion, lighting shifts, physical dynamics, and camera movement over time based on the user's direction.\n"
-									"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
-								llama_prompt += "<|im_start|>user\n";
-								llama_prompt += "User video direction: ";
-								llama_prompt += prompt.c_str();
-								llama_prompt += "<|im_end|>\n";
-							}
-						}
-						else
-						{
-							llama_prompt +=
-								"You are an image descriptor. Describe the provided image in a clear, natural, and descriptive style.\n"
-								"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
-
-							llama_prompt += "<|im_start|>user\n";
-							llama_prompt += "Describe this image.<|im_end|>\n";
-						}
-
+						llama_prompt +=
+							"You are an image descriptor. Describe the provided image in a clear, natural, and descriptive style.\n"
+							"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+						llama_prompt += "<|im_start|>user\n";
+						llama_prompt += "Describe this image.<|im_end|>\n";
 						llama_prompt += "<|im_start|>assistant\n";
 
 						OutputDebugStringA(llama_prompt.c_str());
@@ -1065,6 +1036,7 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(generate_image, stable_diffusion);
 			LINK_DLL_FUNCTION(generate_video, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_sample_params_init, stable_diffusion);
+			LINK_DLL_FUNCTION(sd_hires_params_init, stable_diffusion);
 			LINK_DLL_FUNCTION(free_sd_ctx, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_set_log_callback, stable_diffusion);
 			LINK_DLL_FUNCTION(sd_set_progress_callback, stable_diffusion);
@@ -1179,6 +1151,7 @@ void trigger_generation()
 				{
 					sd_vid_gen_params_t vid_params;
 					sd_vid_gen_params_init(&vid_params);
+					vid_params.prompt = prompt.c_str();
 
 					vid_params.width = ((w2 / 2) / 16) * 16;
 					vid_params.height = ((h2 / 2) / 16) * 16;
@@ -1186,39 +1159,27 @@ void trigger_generation()
 					vid_params.fps = 8;
 					vid_params.video_frames = vid_params.fps * 4 + 1; // + 1 start frame
 
-					if (has_image)
-					{
-						vid_params.strength = 0.5f;
-						vid_params.vace_strength = 0.5f;
-					}
-					else
-					{
-						vid_params.strength = 1.0f;
-						vid_params.vace_strength = 0.0f;
-					}
+					vid_params.strength = 0.5f;
+					vid_params.vace_strength = 0.5f;
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
 
 					sd_sample_params_init(&vid_params.sample_params);
 					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-					vid_params.sample_params.sample_steps = 30;
+					vid_params.sample_params.sample_steps = 20;
 					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 					vid_params.sample_params.eta = 0.0f;
 					vid_params.sample_params.flow_shift = 4.0f;
 
-					vid_params.sample_params.guidance.txt_cfg = 0.0f;
-					vid_params.sample_params.guidance.img_cfg = 0.0f;
+					vid_params.sample_params.guidance.txt_cfg = 4.0f;
+					vid_params.sample_params.guidance.img_cfg = 1.0f;
 					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
 
-					if (!prompt.empty())
+					if (has_image)
 					{
-						vid_params.sample_params.guidance.txt_cfg = 1.0f;
-						if (has_image)
-						{
-							vid_params.sample_params.guidance.img_cfg = 1.2f;
-						}
-						vid_params.prompt = prompt.c_str();
+						vid_params.sample_params.guidance.txt_cfg = 0.0f;
+						vid_params.sample_params.guidance.img_cfg = 0.0f;
 					}
 
 					if (rgba2 != nullptr)
