@@ -77,6 +77,7 @@ enum MODE
 {
 	MODE_IMAGE_GENERATE_ZIMAGE,
 	MODE_IMAGE_GENERATE_FLUX2,
+	MODE_IMAGE_GENERATE_SD3,
 	MODE_IMAGE_EDIT,
 	MODE_ASK,
 	MODE_VIDEO,
@@ -191,6 +192,9 @@ void SetGenerateButtonText()
 		break;
 	case MODE_IMAGE_GENERATE_FLUX2:
 		SetWindowText(hBtnGenerate, L"\u2728 F-Image \u2728");
+		break;
+	case MODE_IMAGE_GENERATE_SD3:
+		SetWindowText(hBtnGenerate, L"\u2728 S-Image \u2728");
 		break;
 	case MODE_IMAGE_EDIT:
 		SetWindowText(hBtnGenerate, L"\u2728 Edit \u2728");
@@ -999,6 +1003,8 @@ void trigger_generation()
 			wchar_t text_encoder_path[MAX_PATH] = {};
 			wchar_t diffusion_model_path[MAX_PATH] = {};
 			wchar_t clip_vision_model_path[MAX_PATH] = {};
+			wchar_t clip_l_model_path[MAX_PATH] = {};
+			wchar_t clip_g_model_path[MAX_PATH] = {};
 
 			if (mode == MODE_VIDEO)
 			{
@@ -1039,24 +1045,45 @@ void trigger_generation()
 
 				sd_params.backend = "te=cpu"; // fix for crash on 8GB GPU
 			}
+			else if (mode == MODE_IMAGE_GENERATE_SD3)
+			{
+				// Stable Diffusion 3.5 large
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/sd3.5_large-vae.safetensors");
+				_snwprintf(clip_l_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/clip_l.safetensors");
+				_snwprintf(clip_g_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/clip_g.safetensors");
+				_snwprintf(t5xxl_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/t5xxl_fp8_e4m3fn.safetensors");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/sd3.5_large-q4_0.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/diffusion_pytorch_model.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/clip_l.safetensors?download=true", clip_l_model_path);
+				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/clip_g.safetensors?download=true", clip_g_model_path);
+				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/t5xxl_fp8_e4m3fn.safetensors?download=true", t5xxl_path);
+				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/sd3.5_large-q4_0.gguf?download=true", diffusion_model_path);
+			}
 
 			char u8_vae_path[MAX_PATH] = {};
 			char u8_t5xxl_path[MAX_PATH] = {};
 			char u8_text_encoder_path[MAX_PATH] = {};
 			char u8_diffusion_model_path[MAX_PATH] = {};
 			char u8_clip_vision_model_path[MAX_PATH] = {};
+			char u8_clip_l_model_path[MAX_PATH] = {};
+			char u8_clip_g_model_path[MAX_PATH] = {};
 
 			WideCharToMultiByte(CP_UTF8, 0, vae_path, -1, u8_vae_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, t5xxl_path, -1, u8_t5xxl_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, text_encoder_path, -1, u8_text_encoder_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, diffusion_model_path, -1, u8_diffusion_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, clip_vision_model_path, -1, u8_clip_vision_model_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, clip_l_model_path, -1, u8_clip_l_model_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, clip_g_model_path, -1, u8_clip_g_model_path, MAX_PATH, nullptr, nullptr);
 
 			sd_params.vae_path = u8_vae_path;
 			sd_params.llm_path = u8_text_encoder_path;
 			sd_params.t5xxl_path = u8_t5xxl_path;
 			sd_params.diffusion_model_path = u8_diffusion_model_path;
 			sd_params.clip_vision_path = u8_clip_vision_model_path;
+			sd_params.clip_l_path = u8_clip_l_model_path;
+			sd_params.clip_g_path = u8_clip_g_model_path;
 			sd_params.wtype = SD_TYPE_COUNT;
 			sd_params.n_threads = -1;
 			sd_params.rng_type = STD_DEFAULT_RNG;
@@ -1304,6 +1331,11 @@ void trigger_generation()
 					sd_sample_params_init(&img_params.sample_params);
 					img_params.sample_params.eta = 0.0f;
 					img_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+
+					img_params.sample_params.guidance.txt_cfg = 1.0f;
+					img_params.sample_params.guidance.img_cfg = 1.0f;
+					img_params.sample_params.guidance.distilled_guidance = 3.5f;
+
 					if (mode == MODE_IMAGE_GENERATE_ZIMAGE)
 					{
 						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
@@ -1314,10 +1346,12 @@ void trigger_generation()
 						img_params.sample_params.scheduler = FLUX2_SCHEDULER;
 						img_params.sample_params.sample_steps = 4;
 					}
-
-					img_params.sample_params.guidance.txt_cfg = 1.0f;
-					img_params.sample_params.guidance.img_cfg = 1.0f;
-					img_params.sample_params.guidance.distilled_guidance = 3.5f;
+					else if (mode == MODE_IMAGE_GENERATE_SD3)
+					{
+						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						img_params.sample_params.sample_steps = 28;
+						img_params.sample_params.guidance.txt_cfg = 3.5f;
+					}
 
 					sd_image_t ref_img = {};
 					if (mode == MODE_IMAGE_EDIT)
@@ -2251,7 +2285,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					HMENU hMenu = CreatePopupMenu();
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (Z-Image)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 103, L"Edit Image (Flux 2)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_SD3 ? MF_CHECKED : 0), 103, L"Generate New Image (Stable Diffusion 3.5)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 104, L"Edit Image (Flux 2)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 / Qwen 3 VL)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
 
@@ -2269,6 +2304,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						mode = MODE_IMAGE_GENERATE_FLUX2;
 						break;
 					case 103:
+						mode = MODE_IMAGE_GENERATE_SD3;
+						break;
+					case 104:
 						mode = MODE_IMAGE_EDIT;
 						break;
 					case 105:
