@@ -596,6 +596,16 @@ void trigger_generation()
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 		CreateDirectory(models_path, 0);
 
+		int64_t seed = -1;
+		wchar_t seed_path[MAX_PATH] = {};
+		_snwprintf(seed_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/seed.txt");
+		std::ifstream seedfile(seed_path);
+		if (seedfile.is_open())
+		{
+			seedfile >> seed;
+			seedfile.close();
+		}
+
 		if (mode == MODE_ASK)
 		{
 			wchar_t dll_dir[MAX_PATH] = {};
@@ -776,7 +786,7 @@ void trigger_generation()
 									llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
 									llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
 									llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.85f));
-									llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+									llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : uint32_t(seed)));
 
 									llama_token new_token_id;
 									const struct llama_vocab* vocab = llama_model_get_vocab(model);
@@ -874,6 +884,7 @@ void trigger_generation()
 						{
 							llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
 							llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+							llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : uint32_t(seed)));
 
 							llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
 							for (size_t i = 0; i < prompt_tokens.size(); i++) {
@@ -1112,10 +1123,10 @@ void trigger_generation()
 				{
 					sd_vid_gen_params_t vid_params;
 					sd_vid_gen_params_init(&vid_params);
-					vid_params.prompt = prompt.c_str();
-
 					vid_params.width = (w2 / 16) * 16;
 					vid_params.height = (h2 / 16) * 16;
+					vid_params.seed = seed;
+					vid_params.prompt = prompt.c_str();
 
 					vid_params.fps = 24;
 					vid_params.video_frames = vid_params.fps * 2 + 1; // 2 sec + 1 start frame
@@ -1323,6 +1334,7 @@ void trigger_generation()
 					sd_img_gen_params_init(&img_params);
 					img_params.width = (w2 / 16) * 16;
 					img_params.height = (h2 / 16) * 16;
+					img_params.seed = seed;
 					img_params.prompt = prompt.c_str();
 					img_params.strength = 1.0f; // affects image to image
 					img_params.batch_count = 1;
