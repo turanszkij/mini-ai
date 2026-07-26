@@ -77,7 +77,7 @@ enum MODE
 	MODE_IMAGE_GENERATE_ZIMAGE,
 	MODE_IMAGE_GENERATE_FLUX2,
 	MODE_IMAGE_EDIT,
-	MODE_IMAGE_DESCRIBE,
+	MODE_ASK,
 	MODE_VIDEO,
 };
 static MODE mode = MODE_IMAGE_GENERATE_ZIMAGE;
@@ -194,8 +194,8 @@ void SetGenerateButtonText()
 	case MODE_IMAGE_EDIT:
 		SetWindowText(hBtnGenerate, L"\u2728 Edit \u2728");
 		break;
-	case MODE_IMAGE_DESCRIBE:
-		SetWindowText(hBtnGenerate, L"\u2728 Describe \u2728");
+	case MODE_ASK:
+		SetWindowText(hBtnGenerate, L"\u2728 Ask \u2728");
 		break;
 	case MODE_VIDEO:
 		SetWindowText(hBtnGenerate, L"\u2728 Video \u2728");
@@ -591,7 +591,7 @@ void trigger_generation()
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
 		CreateDirectory(models_path, 0);
 
-		if (has_image && mode == MODE_IMAGE_DESCRIBE)
+		if (has_image && mode == MODE_ASK)
 		{
 			// Use llama library for text generation from image:
 
@@ -725,13 +725,20 @@ void trigger_generation()
 
 						std::string llama_prompt = "<|im_start|>system\n";
 						llama_prompt +=
-							"You are an image descriptor. Describe the provided image in a clear, natural, and descriptive style.\n"
+							"You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n"
 							"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
 						llama_prompt += "<|im_start|>user\n";
-						llama_prompt += "Describe this image.<|im_end|>\n";
+						if (prompt.empty())
+						{
+							llama_prompt += "Describe the image in detail";
+						}
+						else
+						{
+							llama_prompt += prompt.c_str();
+						}
+						llama_prompt += "\n";
+						llama_prompt += "<|im_end|>\n";
 						llama_prompt += "<|im_start|>assistant\n";
-
-						OutputDebugStringA(llama_prompt.c_str());
 
 						const char* image_marker = mtmd_default_marker();
 						std::string full_text = std::string(image_marker) + llama_prompt;
@@ -791,19 +798,9 @@ void trigger_generation()
 									llama_decode(ctx, batch);
 									n_past += 1;
 
-									if (mode == MODE_IMAGE_DESCRIBE)
-										post_description(result_text);
-								}
-
-								if (mode == MODE_IMAGE_DESCRIBE)
-								{
 									post_description(result_text);
 								}
-								else
-								{
-									prompt = result_text;
-									OutputDebugStringA(prompt.c_str());
-								}
+								post_description(result_text);
 
 								llama_sampler_free(smpl);
 							}
@@ -836,177 +833,174 @@ void trigger_generation()
 			FreeLibrary(mtmd);
 		}
 		
-		//// For video, an additional pass converts the natural description to LingBot JSON format:
-		//if (mode == MODE_VIDEO && !prompt.empty())
-		//{
-		//	// Use llama library for text generation from user prompt but without image:
+		if (!has_image && mode == MODE_ASK)
+		{
+			// Use llama library for text generation from user prompt but without image:
 
-		//	wchar_t model_path[MAX_PATH] = {};
-		//	char u8_model_path[MAX_PATH] = {};
-		//	_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
-		//	WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
-		//	EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
+			wchar_t model_path[MAX_PATH] = {};
+			char u8_model_path[MAX_PATH] = {};
+			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
+			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
 
-		//	wchar_t dll_dir[MAX_PATH] = {};
-		//	_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
-		//	SetDllDirectory(dll_dir);
+			wchar_t dll_dir[MAX_PATH] = {};
+			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
+			SetDllDirectory(dll_dir);
 
-		//	HMODULE llama = LoadLibrary(L"llama.dll");
-		//	if (llama == nullptr)
-		//	{
-		//		MessageBoxA(window, "llama.dll couldn't be loaded!", "Error!", 0);
-		//		return;
-		//	}
-		//	HMODULE ggml = LoadLibrary(L"ggml.dll");
-		//	if (ggml == nullptr)
-		//	{
-		//		FreeLibrary(llama);
-		//		MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
-		//		return;
-		//	}
+			HMODULE llama = LoadLibrary(L"llama.dll");
+			if (llama == nullptr)
+			{
+				MessageBoxA(window, "llama.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
+			HMODULE ggml = LoadLibrary(L"ggml.dll");
+			if (ggml == nullptr)
+			{
+				FreeLibrary(llama);
+				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
+				return;
+			}
 
-		//	LINK_DLL_FUNCTION(llama_model_default_params, llama);
-		//	LINK_DLL_FUNCTION(llama_context_default_params, llama);
-		//	LINK_DLL_FUNCTION(llama_model_load_from_file, llama);
-		//	LINK_DLL_FUNCTION(llama_init_from_model, llama);
-		//	LINK_DLL_FUNCTION(llama_sampler_chain_init, llama);
-		//	LINK_DLL_FUNCTION(llama_sampler_chain_default_params, llama);
-		//	LINK_DLL_FUNCTION(llama_sampler_chain_add, llama);
-		//	LINK_DLL_FUNCTION(llama_sampler_init_greedy, llama);
-		//	LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
-		//	LINK_DLL_FUNCTION(llama_sampler_sample, llama);
-		//	LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
-		//	LINK_DLL_FUNCTION(llama_token_to_piece, llama);
-		//	LINK_DLL_FUNCTION(llama_batch_get_one, llama);
-		//	LINK_DLL_FUNCTION(llama_decode, llama);
-		//	LINK_DLL_FUNCTION(llama_sampler_free, llama);
-		//	LINK_DLL_FUNCTION(llama_model_free, llama);
-		//	LINK_DLL_FUNCTION(llama_free, llama);
-		//	LINK_DLL_FUNCTION(llama_backend_free, llama);
-		//	LINK_DLL_FUNCTION(llama_log_set, llama);
-		//	LINK_DLL_FUNCTION(llama_tokenize, llama);
-		//	LINK_DLL_FUNCTION(llama_batch_init, llama);
-		//	LINK_DLL_FUNCTION(llama_batch_free, llama);
-		//	LINK_DLL_FUNCTION(llama_get_logits_ith, llama);
+			LINK_DLL_FUNCTION(llama_model_default_params, llama);
+			LINK_DLL_FUNCTION(llama_context_default_params, llama);
+			LINK_DLL_FUNCTION(llama_model_load_from_file, llama);
+			LINK_DLL_FUNCTION(llama_init_from_model, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_init, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_default_params, llama);
+			LINK_DLL_FUNCTION(llama_sampler_chain_add, llama);
+			LINK_DLL_FUNCTION(llama_sampler_init_greedy, llama);
+			LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
+			LINK_DLL_FUNCTION(llama_sampler_sample, llama);
+			LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
+			LINK_DLL_FUNCTION(llama_token_to_piece, llama);
+			LINK_DLL_FUNCTION(llama_batch_get_one, llama);
+			LINK_DLL_FUNCTION(llama_decode, llama);
+			LINK_DLL_FUNCTION(llama_sampler_free, llama);
+			LINK_DLL_FUNCTION(llama_model_free, llama);
+			LINK_DLL_FUNCTION(llama_free, llama);
+			LINK_DLL_FUNCTION(llama_backend_free, llama);
+			LINK_DLL_FUNCTION(llama_log_set, llama);
+			LINK_DLL_FUNCTION(llama_tokenize, llama);
+			LINK_DLL_FUNCTION(llama_batch_init, llama);
+			LINK_DLL_FUNCTION(llama_batch_free, llama);
+			LINK_DLL_FUNCTION(llama_get_logits_ith, llama);
 
-		//	LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
-		//	LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
-		//	LINK_DLL_FUNCTION(ggml_backend_load, ggml);
-		//	LINK_DLL_FUNCTION(ggml_backend_unload, ggml);
-		//	LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
-		//	LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_load, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_unload, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
+			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
 
-		//	char u8_dll_dir[MAX_PATH];
-		//	WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
-		//	ggml_backend_load_all_from_path(u8_dll_dir);
+			char u8_dll_dir[MAX_PATH];
+			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
+			ggml_backend_load_all_from_path(u8_dll_dir);
 
-		//	llama_log_set(llama_callback, nullptr);
+			llama_log_set(llama_callback, nullptr);
 
-		//	llama_model_params model_params = llama_model_default_params();
-		//	model_params.n_gpu_layers = -1;
-		//	model_params.progress_callback = my_llama_progress_callback;
+			llama_model_params model_params = llama_model_default_params();
+			model_params.n_gpu_layers = -1;
+			model_params.progress_callback = my_llama_progress_callback;
 
-		//	llama_context_params ctx_params = llama_context_default_params();
-		//	ctx_params.n_ctx = 4096;
-		//	ctx_params.n_batch = 512;
+			llama_context_params ctx_params = llama_context_default_params();
+			ctx_params.n_ctx = 4096;
+			ctx_params.n_batch = 512;
 
-		//	llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
-		//	if (model != nullptr && !cancel_request.load())
-		//	{
-		//		llama_context* ctx = llama_init_from_model(model, ctx_params);
-		//		if (ctx != nullptr && !cancel_request.load())
-		//		{
-		//			OutputDebugStringA("STARTING PROMPT -> VIDEO TEXT");
-		//			std::string llama_prompt;
-		//			llama_prompt += "<|im_start|>system\n";
-		//			llama_prompt += "You are a video prompt parser. Convert natural language into strict, valid JSON for AI video generation. Expand the user prompt to an creatively directed video description. Output JSON ONLY.<|im_end|>\n";
-		//			llama_prompt += "<|im_start|>user\n";
-		//			llama_prompt += prompt.c_str();
-		//			llama_prompt += "<|im_end|>\n<|im_start|>assistant\n";
-		//			OutputDebugStringA(llama_prompt.c_str());
+			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
+			if (model != nullptr && !cancel_request.load())
+			{
+				llama_context* ctx = llama_init_from_model(model, ctx_params);
+				if (ctx != nullptr && !cancel_request.load())
+				{
+					std::string llama_prompt = "<|im_start|>system\n";
+					llama_prompt +=
+						"You are a helpful assistant, answer the user's questions or follow the orders.\n"
+						"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+					llama_prompt += "<|im_start|>user\n";
+					llama_prompt += prompt.c_str();
+					llama_prompt += "\n";
+					llama_prompt += "<|im_end|>\n";
+					llama_prompt += "<|im_start|>assistant\n";
 
-		//			const llama_vocab* vocab = llama_model_get_vocab(model);
+					const llama_vocab* vocab = llama_model_get_vocab(model);
 
-		//			int n_prompt_tokens = -llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), NULL, 0, true, true);
-		//			std::vector<llama_token> prompt_tokens(n_prompt_tokens);
-		//			if (llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), prompt_tokens.data(), (int)prompt_tokens.size(), true, true) >= 0)
-		//			{
-		//				llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-		//				llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+					int n_prompt_tokens = -llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), NULL, 0, true, true);
+					std::vector<llama_token> prompt_tokens(n_prompt_tokens);
+					if (llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), prompt_tokens.data(), (int)prompt_tokens.size(), true, true) >= 0)
+					{
+						llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+						llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 
-		//				llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
-		//				for (size_t i = 0; i < prompt_tokens.size(); i++) {
-		//					batch.token[i] = prompt_tokens[i];
-		//					batch.pos[i] = (llama_pos)i;
-		//					batch.n_seq_id[i] = 1;
-		//					batch.seq_id[i][0] = 0;
-		//					batch.logits[i] = (i == prompt_tokens.size() - 1);
-		//				}
-		//				batch.n_tokens = (int32_t)prompt_tokens.size();
+						llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
+						for (size_t i = 0; i < prompt_tokens.size(); i++) {
+							batch.token[i] = prompt_tokens[i];
+							batch.pos[i] = (llama_pos)i;
+							batch.n_seq_id[i] = 1;
+							batch.seq_id[i][0] = 0;
+							batch.logits[i] = (i == prompt_tokens.size() - 1);
+						}
+						batch.n_tokens = (int32_t)prompt_tokens.size();
 
-		//				if (llama_decode(ctx, batch) == 0)
-		//				{
-		//					std::string generated_json = "";
-		//					int n_cur = batch.n_tokens;
-		//					int n_decode_max = 1024;
+						if (llama_decode(ctx, batch) == 0)
+						{
+							std::string result_text = "";
+							int n_cur = batch.n_tokens;
+							int n_decode_max = 1024;
 
-		//					while (n_cur < n_decode_max && !cancel_request.load()) 
-		//					{
-		//						llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
-		//						if (llama_vocab_is_eog(vocab, new_token_id)) {
-		//							break;
-		//						}
-		//						char piece_buf[128] = { 0 };
-		//						int n = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf), 0, true);
-		//						if (n > 0) {
-		//							generated_json.append(piece_buf, n);
-		//						}
+							while (n_cur < n_decode_max && !cancel_request.load()) 
+							{
+								llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
+								if (llama_vocab_is_eog(vocab, new_token_id)) {
+									break;
+								}
+								char piece_buf[128] = { 0 };
+								int n = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf), 0, true);
+								if (n > 0) {
+									result_text.append(piece_buf, n);
+								}
 
-		//						batch.n_tokens = 0;
-		//						batch.token[0] = new_token_id;
-		//						batch.pos[0] = n_cur;
-		//						batch.n_seq_id[0] = 1;
-		//						batch.seq_id[0][0] = 0;
-		//						batch.logits[0] = true;
-		//						batch.n_tokens = 1;
+								batch.n_tokens = 0;
+								batch.token[0] = new_token_id;
+								batch.pos[0] = n_cur;
+								batch.n_seq_id[0] = 1;
+								batch.seq_id[0][0] = 0;
+								batch.logits[0] = true;
+								batch.n_tokens = 1;
 
-		//						n_cur++;
+								n_cur++;
 
-		//						if (llama_decode(ctx, batch) != 0)
-		//							break;
-		//					}
+								if (llama_decode(ctx, batch) != 0)
+									break;
 
-		//					if (!generated_json.empty())
-		//					{
-		//						prompt = generated_json;
-		//						OutputDebugStringA("Prompt rewriter for video success:\n");
-		//						OutputDebugStringA(prompt.c_str());
-		//					}
-		//				}
+								post_description(result_text);
+							}
+							post_description(result_text);
+						}
 
-		//				llama_batch_free(batch);
-		//				llama_sampler_free(smpl);
-		//			}
-		//		}
-		//	}
+						llama_batch_free(batch);
+						llama_sampler_free(smpl);
+					}
+				}
+			}
+			final_errors = progress_errors;
 
-		//	llama_model_free(model);
-		//	llama_backend_free();
+			llama_model_free(model);
+			llama_backend_free();
 
-		//	while (true)
-		//	{
-		//		size_t n = ggml_backend_reg_count();
-		//		if (n == 0) break;
-		//		ggml_backend_reg_t reg = ggml_backend_reg_get(n - 1);
-		//		if (reg)
-		//		{
-		//			ggml_backend_unload(reg);
-		//		}
-		//	}
+			while (true)
+			{
+				size_t n = ggml_backend_reg_count();
+				if (n == 0) break;
+				ggml_backend_reg_t reg = ggml_backend_reg_get(n - 1);
+				if (reg)
+				{
+					ggml_backend_unload(reg);
+				}
+			}
 
-		//	FreeLibrary(llama);
-		//	FreeLibrary(ggml);
-		//}
+			FreeLibrary(llama);
+			FreeLibrary(ggml);
+		}
 
 		if (mode == MODE_IMAGE_GENERATE_ZIMAGE || mode == MODE_IMAGE_GENERATE_FLUX2 || mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
 		{
@@ -1068,16 +1062,6 @@ void trigger_generation()
 
 			if (mode == MODE_VIDEO)
 			{
-#if 0
-				// Lingbot video
-				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan_2.1_vae.safetensors");
-				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
-				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/lingbot-video-dense-1.3b.safetensors");
-
-				EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors?download=true", vae_path);
-				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", text_encoder_path);
-				EnsureModelExists(L"https://huggingface.co/robbyant/lingbot-video-dense-1.3b/resolve/main/transformer/diffusion_pytorch_model.safetensors?download=true", diffusion_model_path);
-#else
 				// Wan 2.2
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan2.2_vae.safetensors");
 				_snwprintf(t5xxl_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/umt5-xxl-encoder-Q3_K_M.gguf");
@@ -1090,7 +1074,6 @@ void trigger_generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors?download=true", clip_vision_model_path);
 
 				sd_params.backend = "te=cpu"; // fix for crash on 8GB GPU
-#endif
 			}
 			else if (mode == MODE_IMAGE_GENERATE_ZIMAGE)
 			{
@@ -2199,8 +2182,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (Z-Image)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 103, L"Edit Image (Flux 2)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_DESCRIBE ? MF_CHECKED : 0), 104, L"Describe Image (Qwen 3 VL)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 105, L"Video (Wan 2.2)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 / Qwen 3 VL)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
@@ -2218,10 +2201,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					case 103:
 						mode = MODE_IMAGE_EDIT;
 						break;
-					case 104:
-						mode = MODE_IMAGE_DESCRIBE;
-						break;
 					case 105:
+						mode = MODE_ASK;
+						break;
+					case 106:
 						mode = MODE_VIDEO;
 						break;
 					}
