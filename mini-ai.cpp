@@ -88,6 +88,8 @@ static int w = 512, h = 512, c = 3; // properties of the current image
 static unsigned char* rgba = nullptr; // byte data of current image
 static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version
 static int w2, h2; // properties of the current image's scaled version
+static int video_fps = 16; // video generation frames per second
+static int video_seconds = 4; // video generation total seconds
 static int text_height = 180; // textbox input height
 static const int button_height = 45; // height of all the buttons on the bottom row
 static bool is_dragging = false; // separator dragging
@@ -1128,8 +1130,8 @@ void trigger_generation()
 					vid_params.seed = seed;
 					vid_params.prompt = prompt.c_str();
 
-					vid_params.fps = 24;
-					vid_params.video_frames = vid_params.fps * 2 + 1; // 2 sec + 1 start frame
+					vid_params.fps = video_fps;
+					vid_params.video_frames = vid_params.fps * video_seconds + 1; // +1 start frame
 
 					vid_params.strength = 0.5f;
 					vid_params.vace_strength = 0.5f;
