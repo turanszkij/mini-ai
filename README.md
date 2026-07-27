@@ -1,13 +1,8 @@
-<img align="left" width="32px" src=".github/logo.png" />
-
-# Mini-AI
-A super simple graphical application for easy local AI generation tasks.
+# Mini-AI <img align="left" width="42px" src=".github/logo.png" />
+A super simple graphical application for easy AI generation tasks locally on your machine.
 Made in C++ and WinAPI, no external dependencies.
 
-<img width="14%" src=".github/image0.png" />
-<img width="14%" src=".github/image1.png" />
-<img width="14%" src=".github/image2.png" />
-<img width="14%" src=".github/image3.png" />
+<img width="24%" src=".github/image0.png" /> <img width="24%" src=".github/image1.png" /> <img width="24%" src=".github/image2.png" /> <img width="24%" src=".github/image3.png" />
 
 ## Features
 - Image generation from text: You simply type a text and the image will be generated above. Supported AI models:
