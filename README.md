@@ -20,6 +20,7 @@ Made in C++ and WinAPI, no external dependencies.
 ## How to use
 - Write a text prompt into the textbox and hit the bottom right button to generate image (or choose an other mode from its drop-down menu)
 - On first use the required AI models will be downloaded from the internet for the currently selected mode into the `models/` folder, which can take long as they are often several GB large.
+- Generated images and videos will be saved to the `output/` folder near the exe.
 - You can resize the window to set your generation resolution by dragging the window bounds, or choosing from  resolution presets in the right-click menu.
 - You can use Ctrl+C and Ctrl+V to copy images from/to the mini-ai application.
 - You can create a seed.txt and write your random seed in there if you would like to fix the generation seed.
