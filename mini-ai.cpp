@@ -2350,7 +2350,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_SD3 ? MF_CHECKED : 0), 103, L"Generate New Image (Stable Diffusion 3.5)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 104, L"Edit Image (Flux 2)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 / Qwen 3 VL)");
+					AppendMenuW(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 VL)");
 					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
 
 					RECT rc;

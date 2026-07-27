@@ -10,12 +10,11 @@ Made in C++ and WinAPI, no external dependencies.
     - Flux 2 Klein
     - Stable Diffusion 3.5 Large
 - Image Editing: Edit the current image (that was generated or opened) with a text description
-    - Flux 2 Klein (image + text -> image)
+    - Flux 2 Klein
 - Ask: enter a text and the AI will answer. If an image is also opened, the AI can see it and use it for the answer.
-    - Qwen 3 (text -> text)
-    - Qwen 3 VL (image + text -> text)
+    - Qwen 3 VL
 - Video: generate a video from text prompt, and/or from the currently shown image
-    - Wan 2.2  (image + text -> video)
+    - Wan 2.2
 - Copy-paste, undo-redo, resize, save, load, drag and drop, multi-resolution ICO generation
 
 ## Requirements
