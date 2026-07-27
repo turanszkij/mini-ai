@@ -2416,7 +2416,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	wcex.cbWndExtra = 0;
 	wcex.hInstance = hInstance;
 	wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
-	wcex.hbrBackground = CreateSolidBrush(RGB(30, 30, 30));
+	wcex.hbrBackground = NULL;
 	wcex.lpszMenuName = NULL;
 	wcex.lpszClassName = L"mini-ai";
 	wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
