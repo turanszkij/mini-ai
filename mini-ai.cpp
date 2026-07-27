@@ -88,14 +88,15 @@ static int w = 512, h = 512, c = 3; // properties of the current image
 static unsigned char* rgba = nullptr; // byte data of current image
 static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version
 static int w2, h2; // properties of the current image's scaled version
-static int video_fps = 16; // video generation frames per second
-static int video_seconds = 4; // video generation total seconds
+static int video_fps = 24; // video generation frames per second
+static int video_seconds = 2; // video generation total seconds
 static int text_height = 180; // textbox input height
 static const int button_height = 45; // height of all the buttons on the bottom row
 static bool is_dragging = false; // separator dragging
 const int splitter_thickness = 6; // image/textbox separator thickness
 static int progress = 0; // progress of current processing task
 static std::atomic_bool is_generating{ false };
+static std::atomic_bool cancel_request{ false };
 static std::wstring current_download;
 static std::string progress_errors;
 static std::string final_errors;
@@ -119,6 +120,18 @@ static const ResolutionPreset resolution_presets[] = {
 	{1920, 1080},
 	{480, 640},
 	{960, 1280}
+};
+
+struct VideoPreset { int fps, seconds; };
+static const VideoPreset video_presets[] = {
+	{8, 4},
+	{8, 10},
+	{16, 2},
+	{16, 4},
+	{16, 10},
+	{24, 2},
+	{24, 4},
+	{24, 10},
 };
 
 void SavePrompt(HWND hEdit) 
@@ -557,7 +570,6 @@ void post_description(std::string result_text)
 
 void trigger_generation()
 {
-	static std::atomic_bool cancel_request{ false };
 	static sd_ctx_t* sd_ctx = nullptr;
 	using PFN_sd_cancel_generation = decltype(&sd_cancel_generation);
 	static PFN_sd_cancel_generation sd_cancel_generation = nullptr;
@@ -1133,18 +1145,18 @@ void trigger_generation()
 					vid_params.fps = video_fps;
 					vid_params.video_frames = vid_params.fps * video_seconds + 1; // +1 start frame
 
-					vid_params.strength = 0.5f;
-					vid_params.vace_strength = 0.5f;
+					vid_params.strength = 1.0f;
+					vid_params.vace_strength = 1.0f;
 
 					vid_params.vae_tiling_params.enabled = true;
 					vid_params.vae_tiling_params.temporal_tiling = true;
 
 					sd_sample_params_init(&vid_params.sample_params);
 					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-					vid_params.sample_params.sample_steps = 20;
+					vid_params.sample_params.sample_steps = 10;
 					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 					vid_params.sample_params.eta = 0.0f;
-					vid_params.sample_params.flow_shift = 4.0f;
+					vid_params.sample_params.flow_shift = 3.0f;
 
 					vid_params.sample_params.guidance.txt_cfg = 4.0f;
 					vid_params.sample_params.guidance.img_cfg = 1.0f;
@@ -1975,6 +1987,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
+				else if (is_generating.load() || cancel_request.load())
+				{
+					const wchar_t* status = cancel_request.load() ? L"Stopping..." : L"Working...";
+					SetBkMode(hdc, TRANSPARENT);
+					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT shadowRect = textRect;
+					OffsetRect(&shadowRect, 2, 2);
+					SetTextColor(hdc, RGB(10, 10, 10));
+					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					SetTextColor(hdc, RGB(255, 255, 255));
+					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					SelectObject(hdc, hOldFont);
+					DeleteObject(hProgressFont);
+				}
 				else if (rgba == nullptr && !is_generating.load())
 				{
 					const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here to edit.";
@@ -2070,18 +2098,39 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING, 1099, L"New image");
 					AppendMenuW(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
 					AppendMenuW(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
-					AppendMenuW(hMenu, MF_STRING, 1102, L"50%");
-					AppendMenuW(hMenu, MF_STRING, 1103, L"100%");
-					AppendMenuW(hMenu, MF_STRING, 1104, L"200%");
-					AppendMenuW(hMenu, MF_STRING, 1105, L"400%");
+
+					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+					AppendMenuW(hMenu, MF_STRING, 1102, L"scale: 50%");
+					AppendMenuW(hMenu, MF_STRING, 1103, L"scale: 100%");
+					AppendMenuW(hMenu, MF_STRING, 1104, L"scale: 200%");
 
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
 					for (int i = 0; i < ARRAYSIZE(resolution_presets); ++i)
 					{
 						wchar_t restext[32] = {};
-						_snwprintf(restext, ARRAYSIZE(restext), L"%dx%d", resolution_presets[i].w, resolution_presets[i].h);
-						AppendMenuW(hMenu, MF_STRING, 1000 + i, restext);
+						_snwprintf(restext, ARRAYSIZE(restext), L"resolution: %dx%d px", resolution_presets[i].w, resolution_presets[i].h);
+						UINT flags = MF_STRING;
+						if (w2 == resolution_presets[i].w && h2 == resolution_presets[i].h)
+						{
+							flags |= MF_CHECKED;
+						}
+						AppendMenuW(hMenu, flags, 2000 + i, restext);
+					}
+
+					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+					for (int i = 0; i < ARRAYSIZE(video_presets); ++i)
+					{
+						wchar_t restext[32] = {};
+						_snwprintf(restext, ARRAYSIZE(restext), L"video: %d fps, %d seconds", video_presets[i].fps, video_presets[i].seconds);
+						UINT flags = MF_STRING;
+						if (video_fps == video_presets[i].fps && video_seconds == video_presets[i].seconds)
+						{
+							flags |= MF_CHECKED;
+						}
+						AppendMenuW(hMenu, flags, 3000 + i, restext);
 					}
 
 					POINT pt;
@@ -2135,20 +2184,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						if (rgba) redraw();
 						redraw();
 					}
-					else if (selection == 1105) { // 400%
-						if (rgba2) { free(rgba2); rgba2 = nullptr; }
-						w2 = w * 4;
-						h2 = h * 4;
-						resize();
-
-						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
-						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-						if (rgba) redraw();
-						redraw();
+					else if (selection >= 3000) // video preset selection
+					{
+						selection -= 3000;
+						if (selection >= 0 && selection < ARRAYSIZE(video_presets))
+						{
+							video_fps = video_presets[selection].fps;
+							video_seconds = video_presets[selection].seconds;
+						}
 					}
-					else { // resolution selection
-						selection -= 1000;
+					else if(selection >= 2000) // resolution selection
+					{
+						selection -= 2000;
 						if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
 						{
 							w2 = resolution_presets[selection].w;
