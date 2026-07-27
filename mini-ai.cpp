@@ -1153,7 +1153,7 @@ void trigger_generation()
 
 					sd_sample_params_init(&vid_params.sample_params);
 					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-					vid_params.sample_params.sample_steps = 10;
+					vid_params.sample_params.sample_steps = 20;
 					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 					vid_params.sample_params.eta = 0.0f;
 					vid_params.sample_params.flow_shift = 3.0f;
@@ -1162,41 +1162,43 @@ void trigger_generation()
 					vid_params.sample_params.guidance.img_cfg = 1.0f;
 					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
 
+					sd_image_t ref_img = {};
 					if (rgba2 != nullptr)
 					{
-						vid_params.init_image.width = w2;
-						vid_params.init_image.height = h2;
-						vid_params.init_image.channel = 3;
-						vid_params.init_image.data = (uint8_t*)malloc(w2 * h2 * 3);
+						ref_img.width = w2;
+						ref_img.height = h2;
+						ref_img.channel = 3;
+						ref_img.data = (uint8_t*)malloc(w2 * h2 * 3);
 						for (int i = 0; i < w2 * h2; ++i)
 						{
-							vid_params.init_image.data[i * 3 + 0] = rgba2[i * 4 + 0];
-							vid_params.init_image.data[i * 3 + 1] = rgba2[i * 4 + 1];
-							vid_params.init_image.data[i * 3 + 2] = rgba2[i * 4 + 2];
+							ref_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
+							ref_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
+							ref_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
 						}
 					}
 					else if (rgba != nullptr)
 					{
-						vid_params.init_image.width = w;
-						vid_params.init_image.height = h;
-						vid_params.init_image.channel = 3;
-						vid_params.init_image.data = (uint8_t*)malloc(w * h * 3);
+						ref_img.width = w;
+						ref_img.height = h;
+						ref_img.channel = 3;
+						ref_img.data = (uint8_t*)malloc(w * h * 3);
 						for (int i = 0; i < w * h; ++i)
 						{
-							vid_params.init_image.data[i * 3 + 0] = rgba[i * 4 + 0];
-							vid_params.init_image.data[i * 3 + 1] = rgba[i * 4 + 1];
-							vid_params.init_image.data[i * 3 + 2] = rgba[i * 4 + 2];
+							ref_img.data[i * 3 + 0] = rgba[i * 4 + 0];
+							ref_img.data[i * 3 + 1] = rgba[i * 4 + 1];
+							ref_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 						}
 					}
-					if (vid_params.init_image.data != nullptr && (vid_params.init_image.width != vid_params.width || vid_params.init_image.height != vid_params.height))
+					if (ref_img.data != nullptr && (ref_img.width != vid_params.width || ref_img.height != vid_params.height))
 					{
 						// Prescale the input image to match generation resolution:
-						uint8_t* scaled = stbir_resize_uint8_srgb(vid_params.init_image.data, vid_params.init_image.width, vid_params.init_image.height, 0, (unsigned char*)malloc(vid_params.width * vid_params.height * 3), vid_params.width, vid_params.height, 0, STBIR_RGB);
-						vid_params.init_image.width = vid_params.width;
-						vid_params.init_image.height = vid_params.height;
-						free(vid_params.init_image.data);
-						vid_params.init_image.data = scaled;
+						uint8_t* scaled = stbir_resize_uint8_srgb(ref_img.data, ref_img.width, ref_img.height, 0, (unsigned char*)malloc(vid_params.width * vid_params.height * 3), vid_params.width, vid_params.height, 0, STBIR_RGB);
+						ref_img.width = vid_params.width;
+						ref_img.height = vid_params.height;
+						free(ref_img.data);
+						ref_img.data = scaled;
 					}
+					vid_params.init_image = ref_img;
 
 					sd_audio_t* audio = nullptr;
 					sd_image_t* frames = nullptr;
