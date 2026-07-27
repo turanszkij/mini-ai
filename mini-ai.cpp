@@ -2468,17 +2468,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	ShowWindow(window, SW_SHOWDEFAULT);
 	DragAcceptFiles(window, TRUE);
 
-	enum PreferredAppMode {
-		Default,
-		AllowDark,
-		ForceDark,
-		ForceLight,
-		Max
-	};
-
-	using fnSetPreferredAppMode = PreferredAppMode(WINAPI*)(PreferredAppMode appMode);
-	using fnAllowDarkModeForWindow = bool(WINAPI*)(HWND hWnd, bool allow);
-
 	BOOL darkmode = TRUE;
 	DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkmode, sizeof(darkmode));
 	SetWindowTheme(hBtnLoad, L"DarkMode_Explorer", NULL);
