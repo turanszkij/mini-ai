@@ -139,9 +139,9 @@ static const VideoPreset video_presets[] = {
 
 void SavePrompt(HWND hEdit) 
 {
-	int length = GetWindowTextLengthW(hEdit);
+	int length = GetWindowTextLength(hEdit);
 	std::wstring buffer(length, L'\0');
-	GetWindowTextW(hEdit, &buffer[0], length + 1);
+	GetWindowText(hEdit, &buffer[0], length + 1);
 	wchar_t path[MAX_PATH] = {};
 	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
 	std::wofstream file(path);
@@ -171,12 +171,12 @@ void LoadPrompt(HWND hEdit)
 				content.pop_back();
 			}
 		}
-		SetWindowTextW(hEdit, content.c_str());
+		SetWindowText(hEdit, content.c_str());
 		file.close();
 	}
 	else 
 	{
-		SetWindowTextW(hEdit, L"A beautiful mountain landscape...");
+		SetWindowText(hEdit, L"A beautiful mountain landscape...");
 	}
 }
 
@@ -192,7 +192,7 @@ void SetGenerateButtonText()
 	{
 	default:
 	case MODE_IMAGE_GENERATE_ZIMAGE:
-		SetWindowText(hBtnGenerate, L"\u2728 Image \u2728");
+		SetWindowText(hBtnGenerate, L"\u2728 Z-Image \u2728");
 		break;
 	case MODE_IMAGE_GENERATE_FLUX2:
 		SetWindowText(hBtnGenerate, L"\u2728 Image (Flux) \u2728");
@@ -288,7 +288,7 @@ void AddToolTip(HWND hwndParent, HWND hwndTarget, const wchar_t* text)
 	static HWND hwndTT = NULL;
 	if (hwndTT == NULL)
 	{
-		hwndTT = CreateWindowExW(
+		hwndTT = CreateWindowEx(
 			WS_EX_TOPMOST,
 			TOOLTIPS_CLASSW,
 			NULL,
@@ -309,7 +309,7 @@ void AddToolTip(HWND hwndParent, HWND hwndTarget, const wchar_t* text)
 	ti.uId = (UINT_PTR)hwndTarget;
 	ti.lpszText = const_cast<wchar_t*>(text);
 
-	SendMessageW(hwndTT, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+	SendMessage(hwndTT, TTM_ADDTOOLW, 0, (LPARAM)&ti);
 }
 
 void redraw()
@@ -412,9 +412,9 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 		history_index--;
 	}
 
-	int length = GetWindowTextLengthW(hEdit);
+	int length = GetWindowTextLength(hEdit);
 	std::wstring buffer(length, L'\0');
-	GetWindowTextW(hEdit, &buffer[0], length + 1);
+	GetWindowText(hEdit, &buffer[0], length + 1);
 
 	history.push_back({ png_data, out_size, width, height, buffer });
 	history_index++;
@@ -495,7 +495,10 @@ void sd_log(enum sd_log_level_t level, const char* text, void* data)
 		progress_errors += text;
 		InvalidateRect(window, NULL, TRUE);
 	}
-	OutputDebugStringA(text);
+	int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+	std::wstring wstr(cnt, 0);
+	MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
+	OutputDebugString(wstr.c_str());
 }
 
 void sd_callback(int step, int steps, float time, void* data)
@@ -537,7 +540,10 @@ void llama_callback(enum ggml_log_level level, const char* text, void* user_data
 	{
 		progress_errors += text;
 	}
-	OutputDebugStringA(text);
+	int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+	std::wstring wstr(cnt, 0);
+	MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
+	OutputDebugString(wstr.c_str());
 }
 
 bool my_llama_progress_callback(float in_progress, void* user_data)
@@ -606,11 +612,11 @@ void trigger_generation()
 		SetGenerateButtonText();
 
 		std::string prompt;
-		const int textbox_length = GetWindowTextLengthW(hEdit);
+		const int textbox_length = GetWindowTextLength(hEdit);
 		if (textbox_length > 0)
 		{
 			std::wstring buffer(textbox_length, L'\0');
-			GetWindowTextW(hEdit, &buffer[0], textbox_length + 1);
+			GetWindowText(hEdit, &buffer[0], textbox_length + 1);
 			int utf8len = WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, nullptr, 0, nullptr, nullptr);
 			prompt.resize(utf8len, '\0');
 			WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, prompt.data(), (int)prompt.length(), nullptr, nullptr);
@@ -644,14 +650,14 @@ void trigger_generation()
 			HMODULE llama = LoadLibrary(L"llama.dll");
 			if (llama == nullptr)
 			{
-				MessageBoxA(window, "llama.dll couldn't be loaded!", "Error!", 0);
+				MessageBox(window, L"llama.dll couldn't be loaded!", L"Error!", 0);
 				return;
 			}
 			HMODULE ggml = LoadLibrary(L"ggml.dll");
 			if (ggml == nullptr)
 			{
 				FreeLibrary(llama);
-				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
+				MessageBox(window, L"ggml.dll couldn't be loaded!", L"Error!", 0);
 				return;
 			}
 
@@ -717,7 +723,7 @@ void trigger_generation()
 				{
 					FreeLibrary(llama);
 					FreeLibrary(ggml);
-					MessageBoxA(window, "mtmd.dll couldn't be loaded!", "Error!", 0);
+					MessageBox(window, L"mtmd.dll couldn't be loaded!", L"Error!", 0);
 					return;
 				}
 
@@ -988,14 +994,14 @@ void trigger_generation()
 			HMODULE stable_diffusion = LoadLibrary(L"stable-diffusion.dll");
 			if (stable_diffusion == nullptr)
 			{
-				MessageBoxA(window, "stable_diffusion.dll couldn't be loaded!", "Error!", 0);
+				MessageBox(window, L"stable_diffusion.dll couldn't be loaded!", L"Error!", 0);
 				return;
 			}
 			HMODULE ggml = LoadLibrary(L"ggml.dll");
 			if (ggml == nullptr)
 			{
 				FreeLibrary(stable_diffusion);
-				MessageBoxA(window, "ggml.dll couldn't be loaded!", "Error!", 0);
+				MessageBox(window, L"ggml.dll couldn't be loaded!", L"Error!", 0);
 				return;
 			}
 
@@ -1342,7 +1348,7 @@ void trigger_generation()
 							MFShutdown();
 							CoUninitialize();
 
-							ShellExecuteW(NULL, L"open", output_file.c_str(), NULL, NULL, SW_SHOWNORMAL); // open video
+							ShellExecute(NULL, L"open", output_file.c_str(), NULL, NULL, SW_SHOWNORMAL); // open video
 						}
 					}
 					else
@@ -1495,7 +1501,7 @@ void handle_load_image(HWND hWnd)
 	ofn.nFilterIndex = 1;
 	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
 
-	if (GetOpenFileNameW(&ofn))
+	if (GetOpenFileName(&ofn))
 	{
 		char filename[MAX_PATH] = {};
 		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
@@ -1527,7 +1533,7 @@ void handle_save_image(HWND hWnd)
 {
 	if (!rgba2)
 	{
-		MessageBoxW(hWnd, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
+		MessageBox(hWnd, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
 		return;
 	}
 
@@ -1548,7 +1554,7 @@ void handle_save_image(HWND hWnd)
 	ofn.lpstrDefExt = L"png";
 	ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
 
-	if (GetSaveFileNameW(&ofn))
+	if (GetSaveFileName(&ofn))
 	{
 		char filename[MAX_PATH] = {};
 		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
@@ -1681,7 +1687,7 @@ void handle_save_image(HWND hWnd)
 
 		if (!success)
 		{
-			MessageBoxW(hWnd, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
+			MessageBox(hWnd, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
 		}
 	}
 }
@@ -1691,7 +1697,7 @@ void handle_copy_image(HWND hWnd)
 	int draw_height = h2;
 	if (!rgba2 || w2 <= 0 || draw_height <= 0)
 	{
-		MessageBoxW(hWnd, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
+		MessageBox(hWnd, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
 		return;
 	}
 
@@ -1756,7 +1762,7 @@ void handle_paste_image(HWND hWnd)
 		if (hDrop)
 		{
 			wchar_t wfilename[MAX_PATH] = {};
-			if (DragQueryFileW((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
+			if (DragQueryFile((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
 			{
 				CloseClipboard();
 
@@ -1906,13 +1912,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					// Print download progress text to image area:
 					wchar_t status[4096] = {};
-					wsprintfW(status, L"Downloading model: %d%%\n%s", progress, current_download.c_str());
+					_snwprintf(status, ARRAYSIZE(status), L"Downloading model: %d%%\n%s", progress, current_download.c_str());
 					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
 					RECT textRect = { 0, 0, w2, h2 };
 					RECT calcRect = textRect;
-					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+					DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
 					int textHeight = calcRect.bottom - calcRect.top;
 					int containerHeight = textRect.bottom - textRect.top;
 					int offset = (containerHeight - textHeight) / 2;
@@ -1921,9 +1927,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
 					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
 					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
@@ -1931,17 +1937,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					// Print progress text to image area:
 					wchar_t status[32] = {};
-					wsprintfW(status, L"%d%%", progress);
+					_snwprintf(status, ARRAYSIZE(status), L"%d%%", progress);
 					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
 					RECT textRect = { 0, 0, w2, h2 };
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
 					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
@@ -1951,13 +1957,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					std::wstring wstr(cnt, 0);
 					MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, wstr.data(), cnt);
 					wchar_t status[4096] = {};
-					wsprintfW(status, L"Errors:\n%s", wstr.c_str());
+					_snwprintf(status, ARRAYSIZE(status), L"Errors:\n%s", wstr.c_str());
 					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
 					RECT textRect = { 0, 0, w2, h2 };
 					RECT calcRect = textRect;
-					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+					DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
 					int textHeight = calcRect.bottom - calcRect.top;
 					int containerHeight = textRect.bottom - textRect.top;
 					int offset = (containerHeight - textHeight) / 2;
@@ -1966,9 +1972,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
 					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
 					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
@@ -1976,15 +1982,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					const wchar_t* status = cancel_request.load() ? L"Stopping..." : L"Working...";
 					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
 					RECT textRect = { 0, 0, w2, h2 };
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
 					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
@@ -1992,11 +1998,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here to edit.";
 					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFontW(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hProgressFont = CreateFont(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
 					RECT textRect = { 0, 0, w2, h2 };
 					RECT calcRect = textRect;
-					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+					DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
 					int textHeight = calcRect.bottom - calcRect.top;
 					int containerHeight = textRect.bottom - textRect.top;
 					int offset = (containerHeight - textHeight) / 2;
@@ -2005,9 +2011,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
 					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawTextW(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
 					SetTextColor(hdc, RGB(155, 155, 155));
-					DrawTextW(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
 					SelectObject(hdc, hOldFont);
 					DeleteObject(hProgressFont);
 				}
@@ -2080,12 +2086,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if ((HWND)wParam == window)
 				{
 					HMENU hMenu = CreatePopupMenu();
-					AppendMenuW(hMenu, MF_STRING, 1099, L"New image");
-					AppendMenuW(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
-					AppendMenuW(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
-					AppendMenuW(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1102, L"Use CPU (slow)");
+					AppendMenu(hMenu, MF_STRING, 1099, L"New image");
+					AppendMenu(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
+					AppendMenu(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
+					AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1102, L"Use CPU (slow)");
 
-					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
 					for (int i = 0; i < ARRAYSIZE(scale_presets); ++i)
 					{
@@ -2097,10 +2103,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						{
 							flags |= MF_CHECKED;
 						}
-						AppendMenuW(hMenu, flags, 2000 + i, restext);
+						AppendMenu(hMenu, flags, 2000 + i, restext);
 					}
 
-					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
 					for (int i = 0; i < ARRAYSIZE(resolution_presets); ++i)
 					{
@@ -2111,10 +2117,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						{
 							flags |= MF_CHECKED;
 						}
-						AppendMenuW(hMenu, flags, 3000 + i, restext);
+						AppendMenu(hMenu, flags, 3000 + i, restext);
 					}
 
-					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
 					for (int i = 0; i < ARRAYSIZE(video_presets); ++i)
 					{
@@ -2125,12 +2131,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						{
 							flags |= MF_CHECKED;
 						}
-						AppendMenuW(hMenu, flags, 4000 + i, restext);
+						AppendMenu(hMenu, flags, 4000 + i, restext);
 					}
 
-					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
-					AppendMenuW(hMenu, MF_STRING, 8000, L"About...");
+					AppendMenu(hMenu, MF_STRING, 8000, L"About...");
 
 					POINT pt;
 					GetCursorPos(&pt);
@@ -2153,7 +2159,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					}
 					else if (selection == 8000) // about
 					{
-						MessageBoxW(hWnd, L"Created by: Turánszki János\nhttps://github.com/turanszkij/mini-ai\n\nOpen source libraries used:\n- llama\n- stable-diffusion.cpp\n- stb_image.h\n- stb_image_write.h\n- stb_image_resize2.h\n", L"Mini-AI", MB_OK | MB_ICONINFORMATION);
+						MessageBox(hWnd, L"Created by: Turánszki János\nhttps://github.com/turanszkij/mini-ai\n\nOpen source libraries used:\n- llama\n- stable-diffusion.cpp\n- stb_image.h\n- stb_image_write.h\n- stb_image_resize2.h\n", L"Mini-AI", MB_OK | MB_ICONINFORMATION);
 					}
 					else if (selection >= 4000) // video preset selection
 					{
@@ -2254,12 +2260,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
 				{
 					HMENU hMenu = CreatePopupMenu();
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (Z-Image)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_SD3 ? MF_CHECKED : 0), 103, L"Generate New Image (Stable Diffusion 3.5)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 104, L"Edit Image (Flux 2)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 VL)");
-					AppendMenuW(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
+					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (Z-Image)");
+					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
+					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_SD3 ? MF_CHECKED : 0), 103, L"Generate New Image (Stable Diffusion 3.5)");
+					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 104, L"Edit Image (Flux 2)");
+					AppendMenu(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 VL)");
+					AppendMenu(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
 
 					RECT rc;
 					GetWindowRect(hBtnGenerate, &rc);
@@ -2368,7 +2374,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	wcex.lpszClassName = L"mini-ai";
 	wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
 	wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
-	RegisterClassExW(&wcex);
+	RegisterClassEx(&wcex);
 
 	RECT wr = { 0, 0, w, h + splitter_thickness + text_height + button_height };
 	DWORD window_style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
@@ -2376,29 +2382,29 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	int window_width = wr.right - wr.left;
 	int window_height = wr.bottom - wr.top;
 
-	window = CreateWindowW(L"mini-ai", L"mini-ai", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, window_width, window_height, nullptr, nullptr, NULL, nullptr);
-	hEdit = CreateWindowW(L"EDIT", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL, 0, 0, 0, 0, window, NULL, hInstance, NULL);
+	window = CreateWindow(L"mini-ai", L"mini-ai", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, window_width, window_height, nullptr, nullptr, NULL, nullptr);
+	hEdit = CreateWindow(L"EDIT", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL, 0, 0, 0, 0, window, NULL, hInstance, NULL);
 
-	hBtnLoad = CreateWindowW(L"BUTTON", L"\xE8B7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_LOAD_BUTTON, hInstance, NULL);
-	hBtnSave = CreateWindowW(L"BUTTON", L"\xE74E", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_SAVE_BUTTON, hInstance, NULL);
-	hBtnCopy = CreateWindowW(L"BUTTON", L"\xE8C8", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_COPY_BUTTON, hInstance, NULL);
-	hBtnClear = CreateWindowW(L"BUTTON", L"\xE74D", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_CLEAR_BUTTON, hInstance, NULL);
-	hBtnGenerate = CreateWindowW(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_SPLITBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
-	hBtnUndo = CreateWindowW(L"BUTTON", L"\xE7A7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_UNDO_BUTTON, hInstance, NULL);
-	hBtnRedo = CreateWindowW(L"BUTTON", L"\xE7A6", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_REDO_BUTTON, hInstance, NULL);
+	hBtnLoad = CreateWindow(L"BUTTON", L"\xE8B7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_LOAD_BUTTON, hInstance, NULL);
+	hBtnSave = CreateWindow(L"BUTTON", L"\xE74E", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_SAVE_BUTTON, hInstance, NULL);
+	hBtnCopy = CreateWindow(L"BUTTON", L"\xE8C8", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_COPY_BUTTON, hInstance, NULL);
+	hBtnClear = CreateWindow(L"BUTTON", L"\xE74D", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_CLEAR_BUTTON, hInstance, NULL);
+	hBtnGenerate = CreateWindow(L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_SPLITBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_GENERATE_BUTTON, hInstance, NULL);
+	hBtnUndo = CreateWindow(L"BUTTON", L"\xE7A7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_UNDO_BUTTON, hInstance, NULL);
+	hBtnRedo = CreateWindow(L"BUTTON", L"\xE7A6", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_REDO_BUTTON, hInstance, NULL);
 
 	HFONT hFont = CreateFont(34, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Arial");
 	SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-	HFONT hIconFont = CreateFontW(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
-	SendMessageW(hBtnLoad, WM_SETFONT, (WPARAM)hIconFont, TRUE);
-	SendMessageW(hBtnSave, WM_SETFONT, (WPARAM)hIconFont, TRUE);
-	SendMessageW(hBtnCopy, WM_SETFONT, (WPARAM)hIconFont, TRUE);
-	SendMessageW(hBtnClear, WM_SETFONT, (WPARAM)hIconFont, TRUE);
-	SendMessageW(hBtnUndo, WM_SETFONT, (WPARAM)hIconFont, TRUE);
-	SendMessageW(hBtnRedo, WM_SETFONT, (WPARAM)hIconFont, TRUE);
-	HFONT hGenFont = CreateFontW(32, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
-	SendMessageW(hBtnGenerate, WM_SETFONT, (WPARAM)hGenFont, TRUE);
+	HFONT hIconFont = CreateFont(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
+	SendMessage(hBtnLoad, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessage(hBtnSave, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessage(hBtnCopy, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessage(hBtnClear, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessage(hBtnUndo, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	SendMessage(hBtnRedo, WM_SETFONT, (WPARAM)hIconFont, TRUE);
+	HFONT hGenFont = CreateFont(32, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
+	SendMessage(hBtnGenerate, WM_SETFONT, (WPARAM)hGenFont, TRUE);
 
 	AddToolTip(window, hBtnLoad, L"Load Image (Ctrl+O)");
 	AddToolTip(window, hBtnSave, L"Save Image (Ctrl+S)");
@@ -2434,13 +2440,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		{ FCONTROL | FVIRTKEY, 'S', ID_ACCEL_SAVE },
 		{ FCONTROL | FVIRTKEY, VK_RETURN, ID_ACCEL_GENERATE }
 	};
-	HACCEL hAccel = CreateAcceleratorTableW(accels, ARRAYSIZE(accels));
+	HACCEL hAccel = CreateAcceleratorTable(accels, ARRAYSIZE(accels));
 
 	while (!exiting)
 	{
 		MSG msg = {};
 		if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-			if (!TranslateAcceleratorW(window, hAccel, &msg))
+			if (!TranslateAccelerator(window, hAccel, &msg))
 			{
 				TranslateMessage(&msg);
 				DispatchMessage(&msg);
