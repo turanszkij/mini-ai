@@ -92,8 +92,8 @@ static int video_fps = 24; // video generation frames per second
 static int video_seconds = 2; // video generation total seconds
 static int text_height = 180; // textbox input height
 static const int button_height = 45; // height of all the buttons on the bottom row
+static const int splitter_thickness = 8; // image/textbox separator thickness
 static bool is_dragging = false; // separator dragging
-const int splitter_thickness = 6; // image/textbox separator thickness
 static int progress = 0; // progress of current processing task
 static std::atomic_bool is_generating{ false };
 static std::atomic_bool cancel_request{ false };
@@ -177,20 +177,6 @@ void LoadPrompt(HWND hEdit)
 	{
 		SetWindowTextW(hEdit, L"A beautiful mountain landscape...");
 	}
-}
-
-void set_title()
-{
-	wchar_t text[1024] = {};
-	if (progress > 0)
-	{
-		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%)", w2, h2, progress);
-	}
-	else
-	{
-		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx", w2, h2);
-	}
-	SetWindowText(window, text);
 }
 
 void SetGenerateButtonText()
@@ -325,8 +311,19 @@ void AddToolTip(HWND hwndParent, HWND hwndTarget, const wchar_t* text)
 	SendMessageW(hwndTT, TTM_ADDTOOLW, 0, (LPARAM)&ti);
 }
 
-void resize()
+void redraw()
 {
+	wchar_t text[1024] = {};
+	if (progress > 0)
+	{
+		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%)", w2, h2, progress);
+	}
+	else
+	{
+		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx", w2, h2);
+	}
+	SetWindowText(window, text);
+
 	if (rgba2)
 	{
 		free(rgba2);
@@ -336,11 +333,27 @@ void resize()
 	{
 		rgba2 = stbir_resize_uint8_srgb(rgba, w, h, 0, (unsigned char*)malloc(w2 * h2 * 4), w2, h2, 0, STBIR_RGBA);
 	}
-}
 
-void redraw()
-{
-	resize();
+	RECT rc;
+	GetClientRect(window, &rc);
+
+	if (hEdit)
+	{
+		MoveWindow(hEdit, 0, rc.top + h2 + splitter_thickness, rc.right, text_height, TRUE);
+	}
+
+	int square_width = button_height;
+	if (hBtnLoad)    MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
+	if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
+	if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
+	if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
+	if (hBtnUndo)    MoveWindow(hBtnUndo, square_width * 4, rc.bottom - button_height, square_width, button_height, TRUE);
+	if (hBtnRedo)    MoveWindow(hBtnRedo, square_width * 5, rc.bottom - button_height, square_width, button_height, TRUE);
+	if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 6, rc.bottom - button_height, rc.right - (square_width * 6), button_height, TRUE);
+
+	rc = { 0, 0, w2, h2 + splitter_thickness + button_height + text_height };
+	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
+	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 	InvalidateRect(window, NULL, TRUE);
 	UpdateWindow(window);
 }
@@ -487,9 +500,7 @@ void sd_log(enum sd_log_level_t level, const char* text, void* data)
 void sd_callback(int step, int steps, float time, void* data)
 {
 	progress = int(float(step) / float(steps) * 100);
-	set_title();
-	InvalidateRect(window, NULL, FALSE);
-	UpdateWindow(window); // Force immediate refresh
+	redraw();
 }
 
 void sd_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data)
@@ -531,9 +542,7 @@ void llama_callback(enum ggml_log_level level, const char* text, void* user_data
 bool my_llama_progress_callback(float in_progress, void* user_data)
 {
 	progress = int(in_progress * 100);
-	set_title();
-	InvalidateRect(window, NULL, FALSE);
-	UpdateWindow(window); // Force immediate refresh
+	redraw();
 	return true;
 }
 
@@ -1834,29 +1843,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			case WM_SIZE:
 			{
 				w2 = LOWORD(lParam);
-				h2 = HIWORD(lParam) - text_height - button_height;
-				set_title();
-				if (rgba)
-				{
-					resize();
-				}
-
-				RECT rc;
-				GetClientRect(hWnd, &rc);
-
-				if (hEdit)
-				{
-					MoveWindow(hEdit, 0, rc.bottom - button_height - text_height, rc.right, text_height, TRUE);
-				}
-
-				int square_width = button_height;
-				if (hBtnLoad)    MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnUndo)    MoveWindow(hBtnUndo, square_width * 4, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnRedo)    MoveWindow(hBtnRedo, square_width * 5, rc.bottom - button_height, square_width, button_height, TRUE);
-				if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 6, rc.bottom - button_height, rc.right - (square_width * 6), button_height, TRUE);
+				h2 = HIWORD(lParam) - text_height - button_height - splitter_thickness;
+				redraw();
 			}
 			break;
 			case WM_DESTROY:
@@ -1870,8 +1858,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				PAINTSTRUCT ps;
 				HDC hdc = BeginPaint(hWnd, &ps);
 
-				int draw_height = h2 - splitter_thickness;
-
 				if (rgba2 != nullptr)
 				{
 					struct BitmapInfoEx {
@@ -1884,9 +1870,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					bi.hdr.biBitCount = 32;
 					bi.hdr.biCompression = BI_BITFIELDS;
 					bi.hdr.biWidth = w2;
-					bi.hdr.biHeight = -draw_height;
-
-					SetDIBitsToDevice(hdc, 0, 0, w2, draw_height, 0, 0, 0, draw_height, rgba2, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
+					bi.hdr.biHeight = -h2;
+					SetDIBitsToDevice(hdc, 0, 0, w2, h2, 0, 0, 0, h2, rgba2, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
 				}
 				else
 				{
@@ -1898,7 +1883,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					HBRUSH hBrush1 = CreateSolidBrush(color1);
 					HBRUSH hBrush2 = CreateSolidBrush(color2);
 
-					for (int y = 0; y < draw_height; y += cellSize) {
+					for (int y = 0; y < h2; y += cellSize) {
 						for (int x = 0; x < w2; x += cellSize) {
 							RECT cell = { x, y, x + cellSize, y + cellSize };
 							// Alternate colors based on cell position
@@ -1921,7 +1906,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hProgressFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT textRect = { 0, 0, w2, h2 };
 					RECT calcRect = textRect;
 					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
 					int textHeight = calcRect.bottom - calcRect.top;
@@ -1946,7 +1931,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT textRect = { 0, 0, w2, h2 };
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
 					SetTextColor(hdc, RGB(10, 10, 10));
@@ -1966,7 +1951,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hProgressFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT textRect = { 0, 0, w2, h2 };
 					RECT calcRect = textRect;
 					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
 					int textHeight = calcRect.bottom - calcRect.top;
@@ -1989,7 +1974,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hProgressFont = CreateFontW(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT textRect = { 0, 0, w2, h2 };
 					RECT shadowRect = textRect;
 					OffsetRect(&shadowRect, 2, 2);
 					SetTextColor(hdc, RGB(10, 10, 10));
@@ -2005,7 +1990,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hProgressFont = CreateFontW(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 - splitter_thickness };
+					RECT textRect = { 0, 0, w2, h2 };
 					RECT calcRect = textRect;
 					DrawTextW(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
 					int textHeight = calcRect.bottom - calcRect.top;
@@ -2024,7 +2009,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 
 				HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
-				RECT splitter_rect = { 0, draw_height, w2, draw_height + splitter_thickness };
+				RECT splitter_rect = { 0, h2, w2, h2 + splitter_thickness };
 				FillRect(hdc, &splitter_rect, hSplitterBrush);
 				DeleteObject(hSplitterBrush);
 
@@ -2162,35 +2147,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
 						w2 = w / 2;
 						h2 = h / 2;
-						resize();
-
-						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
-						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-						if (rgba) redraw();
 						redraw();
 					}
 					else if (selection == 1103) { // 100%
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
 						w2 = w;
 						h2 = h;
-
-						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
-						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-						if (rgba) redraw();
 						redraw();
 					}
 					else if (selection == 1104) { // 200%
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
 						w2 = w * 2;
 						h2 = h * 2;
-						resize();
-
-						RECT rc = { 0, 0, w2, h2 + button_height + text_height };
-						AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-						SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-						if (rgba) redraw();
 						redraw();
 					}
 					else if (selection == 8000) // about
@@ -2213,12 +2181,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						{
 							w2 = resolution_presets[selection].w;
 							h2 = resolution_presets[selection].h;
-							set_title();
-
-							RECT rc = { 0, 0, w2, h2 + button_height + text_height };
-							AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-							SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-							if (rgba) redraw();
+							redraw();
 						}
 					}
 					else if (selection >= 2000) // resolution scale selection
@@ -2229,12 +2192,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 							const float scale = float(scale_presets[selection]) / 100.0f;
 							w2 = int(w * scale);
 							h2 = int(h * scale);
-							set_title();
-
-							RECT rc = { 0, 0, w2, h2 + button_height + text_height };
-							AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-							SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-							if (rgba) redraw();
+							redraw();
 						}
 					}
 
@@ -2292,78 +2250,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					rgba = stbi_load(filename, &w, &h, &c, 4);
 					if (rgba) push_history(rgba, w, h);
 				}
-				RECT rc = { 0, 0, w, h + button_height + text_height };
+				RECT rc = { 0, 0, w, h +  splitter_thickness + button_height + text_height };
 				AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
 				SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 				SetForegroundWindow(hWnd);
 				redraw();
-			}
-			break;
-
-			case WM_LBUTTONDOWN:
-			{
-				int mouse_y = HIWORD(lParam);
-				RECT rc;
-				GetClientRect(hWnd, &rc);
-				int splitter_y = rc.bottom - button_height - text_height - splitter_thickness;
-				if (mouse_y >= splitter_y && mouse_y <= splitter_y + splitter_thickness)
-				{
-					is_dragging = true;
-					SetCapture(hWnd);
-				}
-			}
-			break;
-
-			case WM_LBUTTONUP:
-				if (is_dragging)
-				{
-					is_dragging = false;
-					ReleaseCapture();
-					if (rgba)
-					{
-						redraw();
-					}
-				}
-				break;
-
-			case WM_MOUSEMOVE:
-			{
-				RECT rc;
-				GetClientRect(hWnd, &rc);
-				int mouse_y = HIWORD(lParam);
-				int splitter_y = rc.bottom - button_height - text_height - splitter_thickness;
-
-				if (is_dragging)
-				{
-					int proposed_height = rc.bottom - button_height - mouse_y - (splitter_thickness / 2);
-					if (proposed_height > 40 && proposed_height < (rc.bottom - 100 - button_height))
-					{
-						text_height = proposed_height;
-						w2 = rc.right;
-						h2 = rc.bottom - text_height - button_height;
-						set_title();
-
-						if (hEdit)
-						{
-							MoveWindow(hEdit, 0, rc.bottom - button_height - text_height, rc.right, text_height, TRUE);
-						}
-
-						int square_width = button_height;
-						if (hBtnLoad)    MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnUndo)    MoveWindow(hBtnUndo, square_width * 4, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnRedo)    MoveWindow(hBtnRedo, square_width * 5, rc.bottom - button_height, square_width, button_height, TRUE);
-						if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 6, rc.bottom - button_height, rc.right - (square_width * 6), button_height, TRUE);
-
-						InvalidateRect(hWnd, NULL, TRUE);
-						if (rgba)
-						{
-							redraw();
-						}
-					}
-				}
 			}
 			break;
 
@@ -2415,15 +2306,52 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			}
 			break;
 
+			case WM_LBUTTONDOWN:
+			{
+				int mouse_y = HIWORD(lParam);
+				if (mouse_y >= h2 && mouse_y <= h2 + splitter_thickness)
+				{
+					is_dragging = true;
+					SetCapture(hWnd);
+				}
+			}
+			break;
+
+			case WM_LBUTTONUP:
+				if (is_dragging)
+				{
+					is_dragging = false;
+					ReleaseCapture();
+					redraw();
+				}
+				break;
+
+			case WM_MOUSEMOVE:
+			{
+				int mouse_y = HIWORD(lParam);
+
+				if (is_dragging)
+				{
+					RECT rc;
+					GetClientRect(hWnd, &rc);
+					int proposed_height = rc.bottom - button_height - mouse_y - (splitter_thickness / 2);
+					if (proposed_height > 40 && proposed_height < (rc.bottom - 100 - button_height))
+					{
+						text_height = proposed_height;
+						w2 = rc.right;
+						h2 = rc.bottom - text_height - button_height - splitter_thickness;
+						redraw();
+					}
+				}
+			}
+			break;
+
 			case WM_SETCURSOR:
 			{
 				POINT pt;
 				GetCursorPos(&pt);
 				ScreenToClient(hWnd, &pt);
-				RECT rc;
-				GetClientRect(hWnd, &rc);
-				int splitter_y = rc.bottom - button_height - text_height - splitter_thickness;
-				if (is_dragging || (pt.y >= splitter_y && pt.y <= splitter_y + splitter_thickness))
+				if (is_dragging || (pt.y >= h2 && pt.y <= h2 + splitter_thickness))
 				{
 					SetCursor(LoadCursor(NULL, IDC_SIZENS));
 					return TRUE;
@@ -2452,7 +2380,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
 	RegisterClassExW(&wcex);
 
-	RECT wr = { 0, 0, w, h + text_height + button_height };
+	RECT wr = { 0, 0, w, h + splitter_thickness + text_height + button_height };
 	DWORD window_style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 	AdjustWindowRect(&wr, window_style, FALSE);
 	int window_width = wr.right - wr.left;
