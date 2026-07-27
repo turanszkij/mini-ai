@@ -371,3 +371,7 @@ models/
 *.txt
 *.png
 *.mp4
+
+*.slnx
+*.vcxproj
+*.filters
