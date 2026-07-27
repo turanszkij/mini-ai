@@ -17,17 +17,16 @@ Made in C++ and WinAPI, no external dependencies.
     - Wan 2.2
 - Copy-paste, undo-redo, resize, save, load, drag and drop, multi-resolution ICO generation
 
-## Requirements
-- Windows 10
-- 8 GB VRAM
-- 16 GB RAM
-
-## Additional Notes
-- On first use the required AI models will be downloaded from the internet for the currently selected mode, which can take long as they are often several GB large.
+## How to use
+- Write a text prompt into the textbox and hit the bottom right button to generate image (or choose an other mode from its drop-down menu)
+- On first use the required AI models will be downloaded from the internet for the currently selected mode into the `models/` folder, which can take long as they are often several GB large.
 - You can resize the window to set your generation resolution by dragging the window bounds, or choosing from  resolution presets in the right-click menu.
 - You can use Ctrl+C and Ctrl+V to copy images from/to the mini-ai application.
 - You can create a seed.txt and write your random seed in there if you would like to fix the generation seed.
 - You can save image as .ico to use for an application icon, it will have multiple resolutions embedded in the file.
+
+## How to build
+- Run build.bat (requires Visual Studio C++ build tools to be installed)
 
 ## Third party libraries used
 - [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)

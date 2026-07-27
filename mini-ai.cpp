@@ -110,6 +110,8 @@ static HWND hBtnGenerate = nullptr;
 static HWND hBtnUndo = nullptr;
 static HWND hBtnRedo = nullptr;
 
+static const int scale_presets[] = { 50,100,200,300 };
+
 struct ResolutionPreset { int w, h; };
 static const ResolutionPreset resolution_presets[] = {
 	{512, 512},
@@ -684,22 +686,20 @@ void trigger_generation()
 			ggml_backend_load_all_from_path(u8_dll_dir);
 			llama_log_set(llama_callback, nullptr);
 
+			wchar_t model_path[MAX_PATH] = {};
+			char u8_model_path[MAX_PATH] = {};
+			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
+			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
+
 			if (has_image)
 			{
 				// Use llama library for text generation from image:
 
-				wchar_t model_path[MAX_PATH] = {};
 				wchar_t mmproj_path[MAX_PATH] = {};
-				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
-				_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
-
-				char u8_model_path[MAX_PATH] = {};
 				char u8_mmproj_path[MAX_PATH] = {};
-
-				WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
+				_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
 				WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
-
-				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
 				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
 
 				HMODULE mtmd = LoadLibrary(L"mtmd.dll");
@@ -859,12 +859,6 @@ void trigger_generation()
 			else
 			{
 				// Use llama library for text generation from user prompt but without image:
-
-				wchar_t model_path[MAX_PATH] = {};
-				char u8_model_path[MAX_PATH] = {};
-				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
-				WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
-				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
 
 				llama_model_params model_params = llama_model_default_params();
 				model_params.n_gpu_layers = -1;
@@ -2103,22 +2097,31 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
-					AppendMenuW(hMenu, MF_STRING, 1102, L"scale: 50%");
-					AppendMenuW(hMenu, MF_STRING, 1103, L"scale: 100%");
-					AppendMenuW(hMenu, MF_STRING, 1104, L"scale: 200%");
+					for (int i = 0; i < ARRAYSIZE(scale_presets); ++i)
+					{
+						wchar_t restext[32] = {};
+						_snwprintf(restext, ARRAYSIZE(restext), L"%d%%", scale_presets[i]);
+						UINT flags = MF_STRING;
+						const float scale = float(scale_presets[i]) / 100.0f;
+						if (int(w * scale) == w2 && int(h * scale) == h2)
+						{
+							flags |= MF_CHECKED;
+						}
+						AppendMenuW(hMenu, flags, 2000 + i, restext);
+					}
 
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
 					for (int i = 0; i < ARRAYSIZE(resolution_presets); ++i)
 					{
 						wchar_t restext[32] = {};
-						_snwprintf(restext, ARRAYSIZE(restext), L"resolution: %dx%d px", resolution_presets[i].w, resolution_presets[i].h);
+						_snwprintf(restext, ARRAYSIZE(restext), L"%dx%d px", resolution_presets[i].w, resolution_presets[i].h);
 						UINT flags = MF_STRING;
 						if (w2 == resolution_presets[i].w && h2 == resolution_presets[i].h)
 						{
 							flags |= MF_CHECKED;
 						}
-						AppendMenuW(hMenu, flags, 2000 + i, restext);
+						AppendMenuW(hMenu, flags, 3000 + i, restext);
 					}
 
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
@@ -2132,8 +2135,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						{
 							flags |= MF_CHECKED;
 						}
-						AppendMenuW(hMenu, flags, 3000 + i, restext);
+						AppendMenuW(hMenu, flags, 4000 + i, restext);
 					}
+
+					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
+					AppendMenuW(hMenu, MF_STRING, 8000, L"About...");
 
 					POINT pt;
 					GetCursorPos(&pt);
@@ -2186,22 +2193,42 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						if (rgba) redraw();
 						redraw();
 					}
-					else if (selection >= 3000) // video preset selection
+					else if (selection == 8000) // about
 					{
-						selection -= 3000;
+						MessageBoxW(hWnd, L"Created by: Turánszki János\nhttps://github.com/turanszkij/mini-ai\n\nOpen source libraries used:\n- llama\n- stable-diffusion.cpp\n- stb_image.h\n- stb_image_write.h\n- stb_image_resize2.h\n", L"Mini-AI", MB_OK | MB_ICONINFORMATION);
+					}
+					else if (selection >= 4000) // video preset selection
+					{
+						selection -= 4000;
 						if (selection >= 0 && selection < ARRAYSIZE(video_presets))
 						{
 							video_fps = video_presets[selection].fps;
 							video_seconds = video_presets[selection].seconds;
 						}
 					}
-					else if(selection >= 2000) // resolution selection
+					else if (selection >= 3000) // resolution selection
 					{
-						selection -= 2000;
+						selection -= 3000;
 						if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
 						{
 							w2 = resolution_presets[selection].w;
 							h2 = resolution_presets[selection].h;
+							set_title();
+
+							RECT rc = { 0, 0, w2, h2 + button_height + text_height };
+							AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+							SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+							if (rgba) redraw();
+						}
+					}
+					else if (selection >= 2000) // resolution scale selection
+					{
+						selection -= 2000;
+						if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
+						{
+							const float scale = float(scale_presets[selection]) / 100.0f;
+							w2 = int(w * scale);
+							h2 = int(h * scale);
 							set_title();
 
 							RECT rc = { 0, 0, w2, h2 + button_height + text_height };
