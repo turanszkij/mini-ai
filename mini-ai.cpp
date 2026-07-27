@@ -95,6 +95,7 @@ static const int button_height = 45; // height of all the buttons on the bottom 
 static const int splitter_thickness = 8; // image/textbox separator thickness
 static bool is_dragging = false; // separator dragging
 static int progress = 0; // progress of current processing task
+static bool is_cpu = false; // cpu or gpu execution preference
 static std::atomic_bool is_generating{ false };
 static std::atomic_bool cancel_request{ false };
 static std::wstring current_download;
@@ -191,13 +192,13 @@ void SetGenerateButtonText()
 	{
 	default:
 	case MODE_IMAGE_GENERATE_ZIMAGE:
-		SetWindowText(hBtnGenerate, L"\u2728 Z-Image \u2728");
+		SetWindowText(hBtnGenerate, L"\u2728 Image \u2728");
 		break;
 	case MODE_IMAGE_GENERATE_FLUX2:
-		SetWindowText(hBtnGenerate, L"\u2728 F-Image \u2728");
+		SetWindowText(hBtnGenerate, L"\u2728 Image (Flux) \u2728");
 		break;
 	case MODE_IMAGE_GENERATE_SD3:
-		SetWindowText(hBtnGenerate, L"\u2728 S-Image \u2728");
+		SetWindowText(hBtnGenerate, L"\u2728 Image (SD) \u2728");
 		break;
 	case MODE_IMAGE_EDIT:
 		SetWindowText(hBtnGenerate, L"\u2728 Edit \u2728");
@@ -334,24 +335,24 @@ void redraw()
 		rgba2 = stbir_resize_uint8_srgb(rgba, w, h, 0, (unsigned char*)malloc(w2 * h2 * 4), w2, h2, 0, STBIR_RGBA);
 	}
 
-	RECT rc;
-	GetClientRect(window, &rc);
+	int y = h2 + splitter_thickness;
 
 	if (hEdit)
 	{
-		MoveWindow(hEdit, 0, rc.top + h2 + splitter_thickness, rc.right, text_height, TRUE);
+		MoveWindow(hEdit, 0, y, w2, text_height, TRUE);
+		y += text_height;
 	}
 
 	int square_width = button_height;
-	if (hBtnLoad)    MoveWindow(hBtnLoad, 0, rc.bottom - button_height, square_width, button_height, TRUE);
-	if (hBtnSave)    MoveWindow(hBtnSave, square_width, rc.bottom - button_height, square_width, button_height, TRUE);
-	if (hBtnCopy)    MoveWindow(hBtnCopy, square_width * 2, rc.bottom - button_height, square_width, button_height, TRUE);
-	if (hBtnClear)   MoveWindow(hBtnClear, square_width * 3, rc.bottom - button_height, square_width, button_height, TRUE);
-	if (hBtnUndo)    MoveWindow(hBtnUndo, square_width * 4, rc.bottom - button_height, square_width, button_height, TRUE);
-	if (hBtnRedo)    MoveWindow(hBtnRedo, square_width * 5, rc.bottom - button_height, square_width, button_height, TRUE);
-	if (hBtnGenerate) MoveWindow(hBtnGenerate, square_width * 6, rc.bottom - button_height, rc.right - (square_width * 6), button_height, TRUE);
+	if (hBtnLoad)		MoveWindow(hBtnLoad, 0, y, square_width, button_height, TRUE);
+	if (hBtnSave)		MoveWindow(hBtnSave, square_width, y, square_width, button_height, TRUE);
+	if (hBtnCopy)		MoveWindow(hBtnCopy, square_width * 2, y, square_width, button_height, TRUE);
+	if (hBtnClear)		MoveWindow(hBtnClear, square_width * 3, y, square_width, button_height, TRUE);
+	if (hBtnUndo)		MoveWindow(hBtnUndo, square_width * 4, y, square_width, button_height, TRUE);
+	if (hBtnRedo)		MoveWindow(hBtnRedo, square_width * 5, y, square_width, button_height, TRUE);
+	if (hBtnGenerate)	MoveWindow(hBtnGenerate, square_width * 6, y, w2 - (square_width * 6), button_height, TRUE);
 
-	rc = { 0, 0, w2, h2 + splitter_thickness + button_height + text_height };
+	RECT rc = { 0, 0, w2, h2 + splitter_thickness + text_height + button_height };
 	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
 	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 	InvalidateRect(window, NULL, TRUE);
@@ -1123,10 +1124,13 @@ void trigger_generation()
 				sd_params.prediction = FLOW_PRED;
 			}
 
-			//sd_params.backend = "cpu"; // fully runs on CPU (slow)
 			//sd_params.backend = "te=cpu"; // text encode on CPU
 			//sd_params.backend = "vae=cpu"; // VAE decode on CPU
 			//sd_params.backend = "controlnet=cpu"; // control net processing on CPU
+			if (is_cpu)
+			{
+				sd_params.backend = "cpu"; // fully runs on CPU (slow)
+			}
 			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
 
 			sd_set_log_callback(sd_log, nullptr);
@@ -2079,6 +2083,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenuW(hMenu, MF_STRING, 1099, L"New image");
 					AppendMenuW(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
 					AppendMenuW(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
+					AppendMenuW(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1102, L"Use CPU (slow)");
 
 					AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
 
@@ -2143,23 +2148,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					else if (selection == 1101) { // Paste
 						handle_paste_image(hWnd);
 					}
-					else if (selection == 1102) { // 50%
-						if (rgba2) { free(rgba2); rgba2 = nullptr; }
-						w2 = w / 2;
-						h2 = h / 2;
-						redraw();
-					}
-					else if (selection == 1103) { // 100%
-						if (rgba2) { free(rgba2); rgba2 = nullptr; }
-						w2 = w;
-						h2 = h;
-						redraw();
-					}
-					else if (selection == 1104) { // 200%
-						if (rgba2) { free(rgba2); rgba2 = nullptr; }
-						w2 = w * 2;
-						h2 = h * 2;
-						redraw();
+					else if (selection == 1102) { // CPU
+						is_cpu = !is_cpu;
 					}
 					else if (selection == 8000) // about
 					{
