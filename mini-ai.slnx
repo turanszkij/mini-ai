@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="mini-ai.vcxproj" Id="203190fa-2681-4ed4-b52c-3a7c949d05cd" />
-</Solution>
