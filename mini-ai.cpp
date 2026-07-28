@@ -221,77 +221,6 @@ void SetGenerateButtonText()
 	}
 }
 
-void EnsureModelExists(const wchar_t* url, const wchar_t* fileName)
-{
-	if (std::filesystem::exists(fileName))
-		return;
-
-	std::wstring tempFileName = std::wstring(fileName) + L".tmp";
-
-	current_download = fileName;
-
-	size_t found;
-	found = current_download.find_last_of(L"/\\");
-	current_download = current_download.substr(found + 1);
-
-	InvalidateRect(window, NULL, TRUE);
-
-	HINTERNET hInternet = InternetOpen(L"MiniAI", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-	HINTERNET hUrl = InternetOpenUrl(hInternet, url, NULL, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE, 0);
-
-	bool success = false;
-	if (hUrl)
-	{
-		DWORD dwSize = 0;
-		DWORD dwHeaderSize = sizeof(dwSize);
-		HttpQueryInfo(hUrl, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &dwSize, &dwHeaderSize, NULL);
-
-		std::ofstream outFile(tempFileName, std::ios::binary);
-		std::vector<char> buffer(1024 * 1024);
-		DWORD bytesRead = 0;
-		DWORD totalRead = 0;
-		int last_progress = -1;
-
-		while (InternetReadFile(hUrl, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
-		{
-			outFile.write(buffer.data(), bytesRead);
-			totalRead += bytesRead;
-
-			if (dwSize > 0)
-			{
-				int current_progress = (int)((double)totalRead / (double)dwSize * 100);
-				if (current_progress != last_progress)
-				{
-					progress = current_progress;
-					last_progress = current_progress;
-					InvalidateRect(window, NULL, FALSE);
-				}
-			}
-		}
-		outFile.close();
-		InternetCloseHandle(hUrl);
-
-		success = (bytesRead == 0);
-	}
-	else
-	{
-		MessageBox(window, L"Could not connect to URL", L"Download Error", MB_OK | MB_ICONERROR);
-	}
-
-	InternetCloseHandle(hInternet);
-
-	if (success) {
-		std::filesystem::rename(tempFileName, fileName);
-	}
-	else {
-		std::filesystem::remove(tempFileName); // clean up partial file
-	}
-
-	current_download.clear();
-	progress = 0;
-	InvalidateRect(window, NULL, TRUE);
-}
-
 void redraw()
 {
 	wchar_t text[1024] = {};
@@ -852,6 +781,76 @@ void generation()
 			seedfile.close();
 		}
 
+		auto EnsureModelExists = [](const wchar_t* url, const wchar_t* fileName) {
+			if (std::filesystem::exists(fileName))
+				return;
+
+			std::wstring tempFileName = std::wstring(fileName) + L".tmp";
+
+			current_download = fileName;
+
+			size_t found;
+			found = current_download.find_last_of(L"/\\");
+			current_download = current_download.substr(found + 1);
+
+			InvalidateRect(window, NULL, TRUE);
+
+			HINTERNET hInternet = InternetOpen(L"MiniAI", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+			HINTERNET hUrl = InternetOpenUrl(hInternet, url, NULL, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE, 0);
+
+			bool success = false;
+			if (hUrl)
+			{
+				DWORD dwSize = 0;
+				DWORD dwHeaderSize = sizeof(dwSize);
+				HttpQueryInfo(hUrl, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &dwSize, &dwHeaderSize, NULL);
+
+				std::ofstream outFile(tempFileName, std::ios::binary);
+				std::vector<char> buffer(1024 * 1024);
+				DWORD bytesRead = 0;
+				DWORD totalRead = 0;
+				int last_progress = -1;
+
+				while (InternetReadFile(hUrl, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
+				{
+					outFile.write(buffer.data(), bytesRead);
+					totalRead += bytesRead;
+
+					if (dwSize > 0)
+					{
+						int current_progress = (int)((double)totalRead / (double)dwSize * 100);
+						if (current_progress != last_progress)
+						{
+							progress = current_progress;
+							last_progress = current_progress;
+							InvalidateRect(window, NULL, FALSE);
+						}
+					}
+				}
+				outFile.close();
+				InternetCloseHandle(hUrl);
+
+				success = (bytesRead == 0);
+			}
+			else
+			{
+				MessageBox(window, L"Could not connect to URL", L"Download Error", MB_OK | MB_ICONERROR);
+			}
+
+			InternetCloseHandle(hInternet);
+
+			if (success) {
+				std::filesystem::rename(tempFileName, fileName);
+			}
+			else {
+				std::filesystem::remove(tempFileName); // clean up partial file
+			}
+
+			current_download.clear();
+			progress = 0;
+			InvalidateRect(window, NULL, TRUE);
+		};
+
 		if (mode == MODE_ASK)
 		{
 			// Use llama library for text generation:
@@ -987,6 +986,7 @@ void generation()
 				{
 					if (has_image)
 					{
+						// Image -> text generation:
 						wchar_t mmproj_path[MAX_PATH] = {};
 						char u8_mmproj_path[MAX_PATH] = {};
 						_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
@@ -1123,7 +1123,7 @@ void generation()
 					}
 					else
 					{
-
+						// Text -> text generation
 						std::string llama_prompt = "<|im_start|>system\n";
 						llama_prompt +=
 							"You are a helpful assistant, answer the user's questions or follow the orders.\n"
@@ -1639,11 +1639,11 @@ void generation()
 				{
 					sd_img_gen_params_t img_params;
 					sd_img_gen_params_init(&img_params);
-					img_params.width = (w2 / 16) * 16;
-					img_params.height = (h2 / 16) * 16;
+					img_params.width = (w2 / 64) * 64;
+					img_params.height = (h2 / 64) * 64;
 					img_params.seed = seed;
 					img_params.prompt = prompt.c_str();
-					img_params.strength = 1.0f; // affects image to image
+					img_params.strength = 1.0f;
 					img_params.batch_count = 1;
 					img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
 
@@ -1653,7 +1653,7 @@ void generation()
 
 					img_params.sample_params.guidance.txt_cfg = 1.0f;
 					img_params.sample_params.guidance.img_cfg = 1.0f;
-					img_params.sample_params.guidance.distilled_guidance = 3.5f;
+					img_params.sample_params.guidance.distilled_guidance = 1.0f;
 
 					if (mode == MODE_IMAGE_GENERATE_ZIMAGE)
 					{
@@ -1667,7 +1667,7 @@ void generation()
 					}
 					else if (mode == MODE_IMAGE_GENERATE_SD3)
 					{
-						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						img_params.sample_params.scheduler = SGM_UNIFORM_SCHEDULER;
 						img_params.sample_params.sample_steps = 28;
 						img_params.sample_params.guidance.txt_cfg = 3.5f;
 					}
