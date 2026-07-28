@@ -1,4 +1,4 @@
-# Mini-AI <img align="left" width="42px" src=".github/logo.png" />
+# Mini-AI <img align="left" width="42px" src=".github/logo.png" /> [![Github Build Status](https://github.com/turanszkij/mini-ai/workflows/Build/badge.svg)](https://github.com/turanszkij/mini-ai/actions)
 A super simple graphical application for easy AI generation tasks locally on your machine.
 Made in C++ and WinAPI, no external dependencies.
 
@@ -24,7 +24,7 @@ Made in C++ and WinAPI, no external dependencies.
 - You can resize the window to set your generation resolution by dragging the window bounds, or choosing from  resolution presets in the right-click menu.
 - You can use Ctrl+C and Ctrl+V to copy images from/to the mini-ai application.
 - You can create a seed.txt and write your random seed in there if you would like to fix the generation seed.
-- You can save image as .ico to use for an application icon, it will have multiple resolutions embedded in the file.
+- You can save any image as `.ico` to use for a windows application icon, it will have multiple resolutions embedded in the file.
 
 ## How to build
 - Run build.bat (requires Visual Studio C++ build tools to be installed)
