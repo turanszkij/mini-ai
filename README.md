@@ -2,20 +2,23 @@
 A super simple graphical application for easy AI generation tasks locally on your machine.
 Made in C++ and WinAPI, no external dependencies.
 
-<img width="18%" src=".github/image0.png" /> <img width="18%" src=".github/image1.png" /> <img width="18%" src=".github/image2.png" /> <img width="18%" src=".github/image3.png" /> <img width="15.8%" src=".github/image4.png" />
+<img width="24%" src=".github/image0.png" /> <img width="24%" src=".github/image1.png" /> <img width="24%" src=".github/image3.png" /> <img width="24%" src=".github/image2.png" />
 
 ## Features
-- Image generation from text: You simply type a text and the image will be generated above. Supported AI models:
+
+ <img width="24%" src=".github/image4.png" align="right" />
+ 
+- Image generation: You simply type a text and the image will be generated.
     - Z-Image Turbo
     - Flux 2 Klein
     - Stable Diffusion 3.5 Large
-- Image Editing: Edit the current image (that was generated or opened) with a text description and optionally by using other reference images
+- Image Editing: Edit the current image with a prompt and other reference images
     - Flux 2 Klein
-- Ask: enter a text and the AI will answer. If an image is also opened, the AI can see it and use it for the answer.
+- Ask: enter a text and the AI will answer, also supports image if one is opened
     - Qwen 3 VL
-- Video: generate a video from text prompt, and/or from the currently shown image, and optionally additional reference images
+- Video: generate a video from text prompt, and/or from the reference images
     - Wan 2.2
-- Copy-paste, undo-redo, resize, save, load, drag and drop, multi-resolution ICO generation
+- Copy-paste, undo-redo, resize, save, load, drag and drop, PNG, JPG, TGA, ICO support
 
 ## How to use
 - Write a text prompt into the textbox and hit the bottom right button to generate image (or choose an other mode from its drop-down menu)
@@ -28,7 +31,7 @@ Made in C++ and WinAPI, no external dependencies.
 
 ## How to build
 - Run build.bat (requires Visual Studio C++ build tools to be installed)
-
+ 
 ## Third party libraries used
 - [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
