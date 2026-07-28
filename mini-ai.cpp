@@ -56,7 +56,7 @@
 
 #define LINK_DLL_FUNCTION(name, dll) using PFN_##name = decltype(&name); PFN_##name name = (PFN_##name)GetProcAddress(dll, #name); assert(name);
 
-// Unique IDs for our buttons
+// Unique button IDs
 #define IDC_LOAD_BUTTON 100
 #define IDC_SAVE_BUTTON 101
 #define IDC_GENERATE_BUTTON 102
@@ -292,35 +292,6 @@ void EnsureModelExists(const wchar_t* url, const wchar_t* fileName)
 	InvalidateRect(window, NULL, TRUE);
 }
 
-void AddToolTip(HWND hwndParent, HWND hwndTarget, const wchar_t* text)
-{
-	static HWND hwndTT = NULL;
-	if (hwndTT == NULL)
-	{
-		hwndTT = CreateWindowEx(
-			WS_EX_TOPMOST,
-			TOOLTIPS_CLASSW,
-			NULL,
-			WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
-			CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-			hwndParent,
-			NULL,
-			GetModuleHandle(NULL),
-			NULL
-		);
-		SetWindowPos(hwndTT, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-	}
-
-	TOOLINFOW ti = {};
-	ti.cbSize = sizeof(ti);
-	ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND; // TTF_SUBCLASS makes Windows automatically handle mouse tracking!
-	ti.hwnd = hwndParent;
-	ti.uId = (UINT_PTR)hwndTarget;
-	ti.lpszText = const_cast<wchar_t*>(text);
-
-	SendMessage(hwndTT, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-}
-
 void redraw()
 {
 	wchar_t text[1024] = {};
@@ -352,14 +323,13 @@ void redraw()
 		y += text_height;
 	}
 
-	int square_width = button_height;
-	if (hBtnLoad)		MoveWindow(hBtnLoad, 0, y, square_width, button_height, TRUE);
-	if (hBtnSave)		MoveWindow(hBtnSave, square_width, y, square_width, button_height, TRUE);
-	if (hBtnCopy)		MoveWindow(hBtnCopy, square_width * 2, y, square_width, button_height, TRUE);
-	if (hBtnClear)		MoveWindow(hBtnClear, square_width * 3, y, square_width, button_height, TRUE);
-	if (hBtnUndo)		MoveWindow(hBtnUndo, square_width * 4, y, square_width, button_height, TRUE);
-	if (hBtnRedo)		MoveWindow(hBtnRedo, square_width * 5, y, square_width, button_height, TRUE);
-	if (hBtnGenerate)	MoveWindow(hBtnGenerate, square_width * 6, y, w2 - (square_width * 6), button_height, TRUE);
+	if (hBtnLoad)		MoveWindow(hBtnLoad, 0, y, button_height, button_height, TRUE);
+	if (hBtnSave)		MoveWindow(hBtnSave, button_height, y, button_height, button_height, TRUE);
+	if (hBtnCopy)		MoveWindow(hBtnCopy, button_height * 2, y, button_height, button_height, TRUE);
+	if (hBtnClear)		MoveWindow(hBtnClear, button_height * 3, y, button_height, button_height, TRUE);
+	if (hBtnUndo)		MoveWindow(hBtnUndo, button_height * 4, y, button_height, button_height, TRUE);
+	if (hBtnRedo)		MoveWindow(hBtnRedo, button_height * 5, y, button_height, button_height, TRUE);
+	if (hBtnGenerate)	MoveWindow(hBtnGenerate, button_height * 6, y, w2 - (button_height * 6), button_height, TRUE);
 
 	RECT rc = { 0, 0, w2, h2 + splitter_thickness + text_height + button_height };
 	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
@@ -2362,6 +2332,33 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	HFONT hGenFont = CreateFont(32, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
 	SendMessage(hBtnGenerate, WM_SETFONT, (WPARAM)hGenFont, TRUE);
 
+	auto AddToolTip = [](HWND hwndParent, HWND hwndTarget, const wchar_t* text) {
+		static HWND hwndTT = NULL;
+		if (hwndTT == NULL)
+		{
+			hwndTT = CreateWindowEx(
+				WS_EX_TOPMOST,
+				TOOLTIPS_CLASSW,
+				NULL,
+				WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+				CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+				hwndParent,
+				NULL,
+				GetModuleHandle(NULL),
+				NULL
+			);
+			SetWindowPos(hwndTT, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+		}
+
+		TOOLINFOW ti = {};
+		ti.cbSize = sizeof(ti);
+		ti.uFlags = TTF_SUBCLASS | TTF_IDISHWND; // TTF_SUBCLASS makes Windows automatically handle mouse tracking!
+		ti.hwnd = hwndParent;
+		ti.uId = (UINT_PTR)hwndTarget;
+		ti.lpszText = const_cast<wchar_t*>(text);
+
+		SendMessage(hwndTT, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+	};
 	AddToolTip(window, hBtnLoad, L"Load Image (Ctrl+O)");
 	AddToolTip(window, hBtnSave, L"Save Image (Ctrl+S)");
 	AddToolTip(window, hBtnCopy, L"Copy Image to Clipboard (Ctrl+C)");
