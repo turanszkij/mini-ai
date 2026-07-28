@@ -82,7 +82,8 @@ enum MODE
 	MODE_VIDEO,
 };
 static MODE mode = MODE_IMAGE_GENERATE_ZIMAGE;
-static wchar_t originalWorkingDir[MAX_PATH];
+static wchar_t originalWorkingDir[MAX_PATH] = {}; // at application start the working directory is remembered and all file operations will be done based on that
+static wchar_t promptPath[MAX_PATH] = {}; // the absolute path of prompt.txt
 static int w = 512, h = 512, c = 3; // properties of the current image
 static unsigned char* rgba = nullptr; // byte data of current image
 static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version
@@ -96,11 +97,11 @@ static const int reference_image_area_height = 120; // fixed height area for ref
 static bool is_dragging = false; // separator dragging
 static int progress = 0; // progress of current processing task
 static bool is_cpu = false; // cpu or gpu execution preference
-static std::atomic_bool is_generating{ false };
-static std::atomic_bool cancel_request{ false };
-static std::wstring current_download;
-static std::string progress_errors;
-static std::string final_errors;
+static std::atomic_bool is_generating{ false }; // true when background thread is running generation task
+static std::atomic_bool cancel_request{ false }; // true when user pushed STOP button and background generation task should be cancelled before it finishes
+static std::wstring current_download; // if model is downloading, this is printed to feedback text
+static std::string progress_errors; // errors while generation is running are colected here but not presented to user yet
+static std::string final_errors; // if generation fails then the errors wil be copied here and shown to user
 static HWND window = nullptr;
 static HWND hEdit = nullptr;
 static HWND hBtnLoad = nullptr;
@@ -172,81 +173,6 @@ struct HistoryEntry
 static std::vector<HistoryEntry> history;
 static int history_index = -1;
 
-void SavePrompt(HWND hEdit)
-{
-	int length = GetWindowTextLength(hEdit);
-	std::wstring buffer(length, L'\0');
-	GetWindowText(hEdit, &buffer[0], length + 1);
-	wchar_t path[MAX_PATH] = {};
-	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
-	std::wofstream file(path);
-	if (file.is_open())
-	{
-		file << buffer;
-		file.close();
-	}
-}
-void LoadPrompt(HWND hEdit)
-{
-	wchar_t path[MAX_PATH] = {};
-	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
-	std::wifstream file(path);
-	if (file.is_open()) {
-		std::wstring content;
-		std::wstring line;
-		while (std::getline(file, line))
-		{
-			content += line + L"\r\n";
-		}
-		if (!content.empty() && content.back() == L'\n')
-		{
-			content.pop_back();
-			if (!content.empty() && content.back() == L'\r')
-			{
-				content.pop_back();
-			}
-		}
-		SetWindowText(hEdit, content.c_str());
-		file.close();
-	}
-	else
-	{
-		SetWindowText(hEdit, L"A beautiful mountain landscape...");
-	}
-}
-
-void SetGenerateButtonText()
-{
-	if (is_generating.load())
-	{
-		SetWindowText(hBtnGenerate, L"\x23F9 STOP");
-		return;
-	}
-
-	switch (mode)
-	{
-	default:
-	case MODE_IMAGE_GENERATE_ZIMAGE:
-		SetWindowText(hBtnGenerate, L"\u2728 Z-Image \u2728");
-		break;
-	case MODE_IMAGE_GENERATE_FLUX2:
-		SetWindowText(hBtnGenerate, L"\u2728 Image (Flux) \u2728");
-		break;
-	case MODE_IMAGE_GENERATE_SD3:
-		SetWindowText(hBtnGenerate, L"\u2728 Image (SD) \u2728");
-		break;
-	case MODE_IMAGE_EDIT:
-		SetWindowText(hBtnGenerate, L"\u2728 Edit \u2728");
-		break;
-	case MODE_ASK:
-		SetWindowText(hBtnGenerate, L"\u2728 Ask \u2728");
-		break;
-	case MODE_VIDEO:
-		SetWindowText(hBtnGenerate, L"\u2728 Video \u2728");
-		break;
-	}
-}
-
 void resize_window_to_image()
 {
 	RECT rc = { 0, 0, w, h + get_ref_container_height() + splitter_thickness + button_height + text_height};
@@ -265,6 +191,37 @@ void redraw()
 		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx", w2, h2);
 	}
 	SetWindowText(window, text);
+
+
+	if (is_generating.load())
+	{
+		SetWindowText(hBtnGenerate, L"\x23F9 STOP");
+	}
+	else
+	{
+		switch (mode)
+		{
+		default:
+		case MODE_IMAGE_GENERATE_ZIMAGE:
+			SetWindowText(hBtnGenerate, L"\u2728 Z-Image \u2728");
+			break;
+		case MODE_IMAGE_GENERATE_FLUX2:
+			SetWindowText(hBtnGenerate, L"\u2728 Image (Flux) \u2728");
+			break;
+		case MODE_IMAGE_GENERATE_SD3:
+			SetWindowText(hBtnGenerate, L"\u2728 Image (SD) \u2728");
+			break;
+		case MODE_IMAGE_EDIT:
+			SetWindowText(hBtnGenerate, L"\u2728 Edit \u2728");
+			break;
+		case MODE_ASK:
+			SetWindowText(hBtnGenerate, L"\u2728 Ask \u2728");
+			break;
+		case MODE_VIDEO:
+			SetWindowText(hBtnGenerate, L"\u2728 Video \u2728");
+			break;
+		}
+	}
 
 	if (rgba2)
 	{
@@ -798,7 +755,7 @@ void generation()
 
 	std::thread worker([] {
 		is_generating.store(true);
-		SetGenerateButtonText();
+		redraw();
 
 		std::string prompt;
 		const int textbox_length = GetWindowTextLength(hEdit);
@@ -1266,7 +1223,16 @@ void generation()
 		{
 			// Use stable diffusion library for image/video generation:
 
-			SavePrompt(hEdit);
+			// Save prompt.txt:
+			if (!prompt.empty())
+			{
+				std::ofstream file(promptPath);
+				if (file.is_open())
+				{
+					file << prompt;
+					file.close();
+				}
+			}
 
 			wchar_t dll_dir[MAX_PATH] = {};
 			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/stable-diffusion", originalWorkingDir);
@@ -1866,9 +1832,8 @@ void generation()
 		is_generating.store(false);
 		sd_ctx = nullptr;
 		progress = 0;
-		SetGenerateButtonText();
 		redraw();
-		});
+	});
 
 	SetThreadDescription((HANDLE)worker.native_handle(), L"AI");
 
@@ -1880,646 +1845,643 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	_wgetcwd(originalWorkingDir, MAX_PATH); // save original working dir at startup
 
 	static bool exiting = false;
-	static auto WndProc = [](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT
+	static auto WndProc = [](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
+		switch (message)
 		{
-			switch (message)
-			{
-			case WM_SIZE:
-			{
-				w2 = LOWORD(lParam);
-				h2 = HIWORD(lParam) - text_height - button_height - splitter_thickness - get_ref_container_height();
-				redraw();
-			}
+		case WM_SIZE:
+		{
+			w2 = LOWORD(lParam);
+			h2 = HIWORD(lParam) - text_height - button_height - splitter_thickness - get_ref_container_height();
+			redraw();
+		}
+		break;
+		case WM_DESTROY:
+			exiting = true;
+			clear_ref_images();
+			PostQuitMessage(0);
 			break;
-			case WM_DESTROY:
-				exiting = true;
-				clear_ref_images();
-				PostQuitMessage(0);
-				break;
-			case WM_ERASEBKGND:
-				return 1;
-			case WM_PAINT:
-			{
-				PAINTSTRUCT ps;
-				HDC hdc = BeginPaint(hWnd, &ps);
+		case WM_ERASEBKGND:
+			return 1;
+		case WM_PAINT:
+		{
+			PAINTSTRUCT ps;
+			HDC hdc = BeginPaint(hWnd, &ps);
 
-				if (rgba2 != nullptr)
+			if (rgba2 != nullptr)
+			{
+				struct BitmapInfoEx {
+					BITMAPINFOHEADER hdr = {};
+					DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
+				};
+				BitmapInfoEx bi = {};
+				bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
+				bi.hdr.biPlanes = 1;
+				bi.hdr.biBitCount = 32;
+				bi.hdr.biCompression = BI_BITFIELDS;
+				bi.hdr.biWidth = w2;
+				bi.hdr.biHeight = -h2;
+				SetDIBitsToDevice(hdc, 0, 0, w2, h2, 0, 0, 0, h2, rgba2, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
+			}
+			else
+			{
+				// Checkerboard
+				const int cellSize = 32;
+				COLORREF color1 = RGB(35, 35, 35);
+				COLORREF color2 = RGB(25, 25, 25);
+
+				HBRUSH hBrush1 = CreateSolidBrush(color1);
+				HBRUSH hBrush2 = CreateSolidBrush(color2);
+
+				for (int y = 0; y < h2; y += cellSize) {
+					for (int x = 0; x < w2; x += cellSize) {
+						RECT cell = { x, y, x + cellSize, y + cellSize };
+						// Alternate colors based on cell position
+						if (((x / cellSize) + (y / cellSize)) % 2 == 0)
+							FillRect(hdc, &cell, hBrush1);
+						else
+							FillRect(hdc, &cell, hBrush2);
+					}
+				}
+
+				DeleteObject(hBrush1);
+				DeleteObject(hBrush2);
+			}
+
+			if (!current_download.empty())
+			{
+				// Print download progress text to image area:
+				wchar_t status[4096] = {};
+				_snwprintf(status, ARRAYSIZE(status), L"Downloading model: %d%%\n%s", progress, current_download.c_str());
+				SetBkMode(hdc, TRANSPARENT);
+				HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+				RECT textRect = { 0, 0, w2, h2 };
+				RECT calcRect = textRect;
+				DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+				int textHeight = calcRect.bottom - calcRect.top;
+				int containerHeight = textRect.bottom - textRect.top;
+				int offset = (containerHeight - textHeight) / 2;
+				textRect.top += offset;
+				textRect.bottom = textRect.top + textHeight;
+				RECT shadowRect = textRect;
+				OffsetRect(&shadowRect, 2, 2);
+				SetTextColor(hdc, RGB(10, 10, 10));
+				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+				SetTextColor(hdc, RGB(255, 255, 255));
+				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+				SelectObject(hdc, hOldFont);
+				DeleteObject(hProgressFont);
+			}
+			else if (progress > 0 && progress < 100)
+			{
+				// Print progress text to image area:
+				wchar_t status[32] = {};
+				_snwprintf(status, ARRAYSIZE(status), L"%d%%", progress);
+				SetBkMode(hdc, TRANSPARENT);
+				HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+				RECT textRect = { 0, 0, w2, h2 };
+				RECT shadowRect = textRect;
+				OffsetRect(&shadowRect, 2, 2);
+				SetTextColor(hdc, RGB(10, 10, 10));
+				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				SetTextColor(hdc, RGB(255, 255, 255));
+				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				SelectObject(hdc, hOldFont);
+				DeleteObject(hProgressFont);
+			}
+			else if (!final_errors.empty())
+			{
+				int cnt = MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, nullptr, 0);
+				std::wstring wstr(cnt, 0);
+				MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, wstr.data(), cnt);
+				wchar_t status[4096] = {};
+				_snwprintf(status, ARRAYSIZE(status), L"Errors:\n%s", wstr.c_str());
+				SetBkMode(hdc, TRANSPARENT);
+				HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+				RECT textRect = { 0, 0, w2, h2 };
+				RECT calcRect = textRect;
+				DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+				int textHeight = calcRect.bottom - calcRect.top;
+				int containerHeight = textRect.bottom - textRect.top;
+				int offset = (containerHeight - textHeight) / 2;
+				textRect.top += offset;
+				textRect.bottom = textRect.top + textHeight;
+				RECT shadowRect = textRect;
+				OffsetRect(&shadowRect, 2, 2);
+				SetTextColor(hdc, RGB(10, 10, 10));
+				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+				SetTextColor(hdc, RGB(255, 255, 255));
+				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+				SelectObject(hdc, hOldFont);
+				DeleteObject(hProgressFont);
+			}
+			else if (is_generating.load() || cancel_request.load())
+			{
+				const wchar_t* status = cancel_request.load() ? L"Stopping..." : L"Working...";
+				SetBkMode(hdc, TRANSPARENT);
+				HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+				RECT textRect = { 0, 0, w2, h2 };
+				RECT shadowRect = textRect;
+				OffsetRect(&shadowRect, 2, 2);
+				SetTextColor(hdc, RGB(10, 10, 10));
+				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				SetTextColor(hdc, RGB(255, 255, 255));
+				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				SelectObject(hdc, hOldFont);
+				DeleteObject(hProgressFont);
+			}
+			else if (rgba == nullptr && !is_generating.load())
+			{
+				const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here.";
+				SetBkMode(hdc, TRANSPARENT);
+				HFONT hProgressFont = CreateFont(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
+				RECT textRect = { 0, 0, w2, h2 };
+				RECT calcRect = textRect;
+				DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+				int textHeight = calcRect.bottom - calcRect.top;
+				int containerHeight = textRect.bottom - textRect.top;
+				int offset = (containerHeight - textHeight) / 2;
+				textRect.top += offset;
+				textRect.bottom = textRect.top + textHeight;
+				RECT shadowRect = textRect;
+				OffsetRect(&shadowRect, 2, 2);
+				SetTextColor(hdc, RGB(10, 10, 10));
+				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+				SetTextColor(hdc, RGB(155, 155, 155));
+				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+				SelectObject(hdc, hOldFont);
+				DeleteObject(hProgressFont);
+			}
+
+			if (mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+			{
+				// Draw reference image list:
+				RECT ref_rect = { 0, h2, w2, h2 + get_ref_container_height() };
+				HBRUSH hRefBg = CreateSolidBrush(RGB(20, 20, 20));
+				FillRect(hdc, &ref_rect, hRefBg);
+				DeleteObject(hRefBg);
+
+				if (reference_images.empty())
 				{
-					struct BitmapInfoEx {
-						BITMAPINFOHEADER hdr = {};
-						DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
-					};
-					BitmapInfoEx bi = {};
-					bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
-					bi.hdr.biPlanes = 1;
-					bi.hdr.biBitCount = 32;
-					bi.hdr.biCompression = BI_BITFIELDS;
-					bi.hdr.biWidth = w2;
-					bi.hdr.biHeight = -h2;
-					SetDIBitsToDevice(hdc, 0, 0, w2, h2, 0, 0, 0, h2, rgba2, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
+					SetBkMode(hdc, TRANSPARENT);
+					HFONT hRefHintFont = CreateFont(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hOldFont = (HFONT)SelectObject(hdc, hRefHintFont);
+					SetTextColor(hdc, RGB(120, 120, 120));
+					DrawText(hdc, L"You can drop additional reference images here", -1, &ref_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					SelectObject(hdc, hOldFont);
+					DeleteObject(hRefHintFont);
 				}
 				else
 				{
-					// Checkerboard
-					const int cellSize = 32;
-					COLORREF color1 = RGB(35, 35, 35);
-					COLORREF color2 = RGB(25, 25, 25);
+					int current_x = 8;
+					const int margin = 8;
+					const int target_h = get_ref_container_height() - (margin * 2);
 
-					HBRUSH hBrush1 = CreateSolidBrush(color1);
-					HBRUSH hBrush2 = CreateSolidBrush(color2);
-
-					for (int y = 0; y < h2; y += cellSize) {
-						for (int x = 0; x < w2; x += cellSize) {
-							RECT cell = { x, y, x + cellSize, y + cellSize };
-							// Alternate colors based on cell position
-							if (((x / cellSize) + (y / cellSize)) % 2 == 0)
-								FillRect(hdc, &cell, hBrush1);
-							else
-								FillRect(hdc, &cell, hBrush2);
-						}
-					}
-
-					DeleteObject(hBrush1);
-					DeleteObject(hBrush2);
-				}
-
-				if (!current_download.empty())
-				{
-					// Print download progress text to image area:
-					wchar_t status[4096] = {};
-					_snwprintf(status, ARRAYSIZE(status), L"Downloading model: %d%%\n%s", progress, current_download.c_str());
-					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 };
-					RECT calcRect = textRect;
-					DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
-					int textHeight = calcRect.bottom - calcRect.top;
-					int containerHeight = textRect.bottom - textRect.top;
-					int offset = (containerHeight - textHeight) / 2;
-					textRect.top += offset;
-					textRect.bottom = textRect.top + textHeight;
-					RECT shadowRect = textRect;
-					OffsetRect(&shadowRect, 2, 2);
-					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
-					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
-					SelectObject(hdc, hOldFont);
-					DeleteObject(hProgressFont);
-				}
-				else if (progress > 0 && progress < 100)
-				{
-					// Print progress text to image area:
-					wchar_t status[32] = {};
-					_snwprintf(status, ARRAYSIZE(status), L"%d%%", progress);
-					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 };
-					RECT shadowRect = textRect;
-					OffsetRect(&shadowRect, 2, 2);
-					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-					SelectObject(hdc, hOldFont);
-					DeleteObject(hProgressFont);
-				}
-				else if (!final_errors.empty())
-				{
-					int cnt = MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, nullptr, 0);
-					std::wstring wstr(cnt, 0);
-					MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, wstr.data(), cnt);
-					wchar_t status[4096] = {};
-					_snwprintf(status, ARRAYSIZE(status), L"Errors:\n%s", wstr.c_str());
-					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 };
-					RECT calcRect = textRect;
-					DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
-					int textHeight = calcRect.bottom - calcRect.top;
-					int containerHeight = textRect.bottom - textRect.top;
-					int offset = (containerHeight - textHeight) / 2;
-					textRect.top += offset;
-					textRect.bottom = textRect.top + textHeight;
-					RECT shadowRect = textRect;
-					OffsetRect(&shadowRect, 2, 2);
-					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
-					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
-					SelectObject(hdc, hOldFont);
-					DeleteObject(hProgressFont);
-				}
-				else if (is_generating.load() || cancel_request.load())
-				{
-					const wchar_t* status = cancel_request.load() ? L"Stopping..." : L"Working...";
-					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 };
-					RECT shadowRect = textRect;
-					OffsetRect(&shadowRect, 2, 2);
-					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-					SetTextColor(hdc, RGB(255, 255, 255));
-					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-					SelectObject(hdc, hOldFont);
-					DeleteObject(hProgressFont);
-				}
-				else if (rgba == nullptr && !is_generating.load())
-				{
-					const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here to edit.";
-					SetBkMode(hdc, TRANSPARENT);
-					HFONT hProgressFont = CreateFont(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-					RECT textRect = { 0, 0, w2, h2 };
-					RECT calcRect = textRect;
-					DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
-					int textHeight = calcRect.bottom - calcRect.top;
-					int containerHeight = textRect.bottom - textRect.top;
-					int offset = (containerHeight - textHeight) / 2;
-					textRect.top += offset;
-					textRect.bottom = textRect.top + textHeight;
-					RECT shadowRect = textRect;
-					OffsetRect(&shadowRect, 2, 2);
-					SetTextColor(hdc, RGB(10, 10, 10));
-					DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
-					SetTextColor(hdc, RGB(155, 155, 155));
-					DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
-					SelectObject(hdc, hOldFont);
-					DeleteObject(hProgressFont);
-				}
-
-				if (mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
-				{
-					// Draw reference image list:
-					RECT ref_rect = { 0, h2, w2, h2 + get_ref_container_height() };
-					HBRUSH hRefBg = CreateSolidBrush(RGB(20, 20, 20));
-					FillRect(hdc, &ref_rect, hRefBg);
-					DeleteObject(hRefBg);
-
-					if (reference_images.empty())
+					for (size_t i = 0; i < reference_images.size(); ++i)
 					{
+						ReferenceImage& reference_image = reference_images[i];
+						int target_w = (int)((float)reference_image.w * ((float)target_h / (float)reference_image.h));
+						if (target_w <= 0) target_w = target_h;
+
+						reference_image.render_rect = { current_x, h2 + margin, current_x + target_w, h2 + margin + target_h };
+						reference_image.close_rect = { reference_image.render_rect.right - 18, reference_image.render_rect.top + 2, reference_image.render_rect.right - 2, reference_image.render_rect.top + 18 };
+
+						// Scale RGBA image for reference view
+						unsigned char* scaled_ref = stbir_resize_uint8_srgb(reference_image.rgba, reference_image.w, reference_image.h, 0, (unsigned char*)malloc(target_w * target_h * 4), target_w, target_h, 0, STBIR_RGBA);
+						if (scaled_ref)
+						{
+							struct BitmapInfoEx {
+								BITMAPINFOHEADER hdr = {};
+								DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
+							};
+							BitmapInfoEx bi = {};
+							bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
+							bi.hdr.biPlanes = 1;
+							bi.hdr.biBitCount = 32;
+							bi.hdr.biCompression = BI_BITFIELDS;
+							bi.hdr.biWidth = target_w;
+							bi.hdr.biHeight = -target_h;
+							SetDIBitsToDevice(hdc, current_x, h2 + margin, target_w, target_h, 0, 0, 0, target_h, scaled_ref, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
+							free(scaled_ref);
+						}
+
+						// Draw border around reference image
+						HPEN hPen = CreatePen(PS_SOLID, 3, RGB(120, 120, 120));
+						HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+						HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+						Rectangle(hdc, reference_image.render_rect.left, reference_image.render_rect.top, reference_image.render_rect.right, reference_image.render_rect.bottom);
+						SelectObject(hdc, hOldBrush);
+						SelectObject(hdc, hOldPen);
+						DeleteObject(hPen);
+
+						// Render close badge on top-right corner of reference item
+						HBRUSH hBadgeBrush = CreateSolidBrush(RGB(180, 40, 40));
+						FillRect(hdc, &reference_image.close_rect, hBadgeBrush);
+						DeleteObject(hBadgeBrush);
+
 						SetBkMode(hdc, TRANSPARENT);
-						HFONT hRefHintFont = CreateFont(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-						HFONT hOldFont = (HFONT)SelectObject(hdc, hRefHintFont);
-						SetTextColor(hdc, RGB(120, 120, 120));
-						DrawText(hdc, L"Drop additional reference images here", -1, &ref_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-						SelectObject(hdc, hOldFont);
-						DeleteObject(hRefHintFont);
-					}
-					else
-					{
-						int current_x = 8;
-						const int margin = 8;
-						const int target_h = get_ref_container_height() - (margin * 2);
+						SetTextColor(hdc, RGB(255, 255, 255));
+						HFONT hXFont = CreateFont(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+						HFONT hOldF = (HFONT)SelectObject(hdc, hXFont);
+						DrawText(hdc, L"\u2715", -1, &reference_image.close_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						SelectObject(hdc, hOldF);
+						DeleteObject(hXFont);
 
-						for (size_t i = 0; i < reference_images.size(); ++i)
-						{
-							ReferenceImage& reference_image = reference_images[i];
-							int target_w = (int)((float)reference_image.w * ((float)target_h / (float)reference_image.h));
-							if (target_w <= 0) target_w = target_h;
-
-							reference_image.render_rect = { current_x, h2 + margin, current_x + target_w, h2 + margin + target_h };
-							reference_image.close_rect = { reference_image.render_rect.right - 18, reference_image.render_rect.top + 2, reference_image.render_rect.right - 2, reference_image.render_rect.top + 18 };
-
-							// Scale RGBA image for reference view
-							unsigned char* scaled_ref = stbir_resize_uint8_srgb(reference_image.rgba, reference_image.w, reference_image.h, 0, (unsigned char*)malloc(target_w * target_h * 4), target_w, target_h, 0, STBIR_RGBA);
-							if (scaled_ref)
-							{
-								struct BitmapInfoEx {
-									BITMAPINFOHEADER hdr = {};
-									DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
-								};
-								BitmapInfoEx bi = {};
-								bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
-								bi.hdr.biPlanes = 1;
-								bi.hdr.biBitCount = 32;
-								bi.hdr.biCompression = BI_BITFIELDS;
-								bi.hdr.biWidth = target_w;
-								bi.hdr.biHeight = -target_h;
-								SetDIBitsToDevice(hdc, current_x, h2 + margin, target_w, target_h, 0, 0, 0, target_h, scaled_ref, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
-								free(scaled_ref);
-							}
-
-							// Draw border around reference image
-							HPEN hPen = CreatePen(PS_SOLID, 3, RGB(120, 120, 120));
-							HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-							HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
-							Rectangle(hdc, reference_image.render_rect.left, reference_image.render_rect.top, reference_image.render_rect.right, reference_image.render_rect.bottom);
-							SelectObject(hdc, hOldBrush);
-							SelectObject(hdc, hOldPen);
-							DeleteObject(hPen);
-
-							// Render close badge on top-right corner of reference item
-							HBRUSH hBadgeBrush = CreateSolidBrush(RGB(180, 40, 40));
-							FillRect(hdc, &reference_image.close_rect, hBadgeBrush);
-							DeleteObject(hBadgeBrush);
-
-							SetBkMode(hdc, TRANSPARENT);
-							SetTextColor(hdc, RGB(255, 255, 255));
-							HFONT hXFont = CreateFont(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-							HFONT hOldF = (HFONT)SelectObject(hdc, hXFont);
-							DrawText(hdc, L"\u2715", -1, &reference_image.close_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-							SelectObject(hdc, hOldF);
-							DeleteObject(hXFont);
-
-							current_x += target_w + margin;
-						}
+						current_x += target_w + margin;
 					}
 				}
+			}
 
-				HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
-				RECT splitter_rect = { 0, h2 + get_ref_container_height(), w2, h2 + get_ref_container_height() + splitter_thickness };
-				FillRect(hdc, &splitter_rect, hSplitterBrush);
-				DeleteObject(hSplitterBrush);
+			HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
+			RECT splitter_rect = { 0, h2 + get_ref_container_height(), w2, h2 + get_ref_container_height() + splitter_thickness };
+			FillRect(hdc, &splitter_rect, hSplitterBrush);
+			DeleteObject(hSplitterBrush);
 
-				EndPaint(hWnd, &ps);
+			EndPaint(hWnd, &ps);
+		}
+		break;
+
+		case WM_COMMAND:
+			if (HIWORD(wParam) == BN_CLICKED || HIWORD(wParam) == 1)
+			{
+				switch (LOWORD(wParam))
+				{
+				case IDC_LOAD_BUTTON:
+				case ID_ACCEL_LOAD:
+					load_image(hWnd);
+					break;
+				case IDC_SAVE_BUTTON:
+				case ID_ACCEL_SAVE:
+					save_image(hWnd);
+					break;
+				case IDC_COPY_BUTTON:
+					copy_image(hWnd);
+					break;
+				case IDC_CLEAR_BUTTON:
+					if (rgba) { free(rgba); rgba = nullptr; }
+					if (rgba2) { free(rgba2); rgba2 = nullptr; }
+					clear_ref_images();
+					push_history(nullptr, w, h);
+					redraw();
+					break;
+				case IDC_GENERATE_BUTTON:
+				case ID_ACCEL_GENERATE:
+					generation();
+					break;
+				case IDC_UNDO_BUTTON:
+					undo();
+					break;
+				case IDC_REDO_BUTTON:
+					redo();
+					break;
+				}
 			}
 			break;
 
-			case WM_COMMAND:
-				if (HIWORD(wParam) == BN_CLICKED || HIWORD(wParam) == 1)
-				{
-					switch (LOWORD(wParam))
-					{
-					case IDC_LOAD_BUTTON:
-					case ID_ACCEL_LOAD:
-						load_image(hWnd);
-						break;
-					case IDC_SAVE_BUTTON:
-					case ID_ACCEL_SAVE:
-						save_image(hWnd);
-						break;
-					case IDC_COPY_BUTTON:
-						copy_image(hWnd);
-						break;
-					case IDC_CLEAR_BUTTON:
-						if (rgba) { free(rgba); rgba = nullptr; }
-						if (rgba2) { free(rgba2); rgba2 = nullptr; }
-						clear_ref_images();
-						push_history(nullptr, w, h);
-						redraw();
-						break;
-					case IDC_GENERATE_BUTTON:
-					case ID_ACCEL_GENERATE:
-						generation();
-						break;
-					case IDC_UNDO_BUTTON:
-						undo();
-						break;
-					case IDC_REDO_BUTTON:
-						redo();
-						break;
-					}
-				}
-				break;
-
-			case WM_KEYDOWN:
-				if (GetKeyState(VK_CONTROL) & 0x8000)
-				{
-					if (wParam == 'V')
-					{
-						if (GetFocus() != hEdit) paste_image(hWnd);
-					}
-					else if (wParam == 'Z')
-					{
-						if (GetFocus() != hEdit) undo();
-					}
-					else if (wParam == 'Y')
-					{
-						if (GetFocus() != hEdit) redo();
-					}
-				}
-				break;
-
-			case WM_CONTEXTMENU:
+		case WM_KEYDOWN:
+			if (GetKeyState(VK_CONTROL) & 0x8000)
 			{
-				if ((HWND)wParam == window)
+				if (wParam == 'V')
 				{
-					HMENU hMenu = CreatePopupMenu();
-					AppendMenu(hMenu, MF_STRING, 1099, L"New image");
-					AppendMenu(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
-					AppendMenu(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
-					AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
-					AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
-
-					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-
-					for (int i = 0; i < ARRAYSIZE(scale_presets); ++i)
-					{
-						wchar_t restext[32] = {};
-						_snwprintf(restext, ARRAYSIZE(restext), L"%d%%", scale_presets[i]);
-						UINT flags = MF_STRING;
-						const float scale = float(scale_presets[i]) / 100.0f;
-						if (int(w * scale) == w2 && int(h * scale) == h2)
-						{
-							flags |= MF_CHECKED;
-						}
-						AppendMenu(hMenu, flags, 2000 + i, restext);
-					}
-
-					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-
-					for (int i = 0; i < ARRAYSIZE(resolution_presets); ++i)
-					{
-						wchar_t restext[32] = {};
-						_snwprintf(restext, ARRAYSIZE(restext), L"%dx%d px", resolution_presets[i].w, resolution_presets[i].h);
-						UINT flags = MF_STRING;
-						if (w2 == resolution_presets[i].w && h2 == resolution_presets[i].h)
-						{
-							flags |= MF_CHECKED;
-						}
-						AppendMenu(hMenu, flags, 3000 + i, restext);
-					}
-
-					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-
-					for (int i = 0; i < ARRAYSIZE(video_presets); ++i)
-					{
-						wchar_t restext[32] = {};
-						_snwprintf(restext, ARRAYSIZE(restext), L"video: %d fps, %d seconds", video_presets[i].fps, video_presets[i].seconds);
-						UINT flags = MF_STRING;
-						if (video_fps == video_presets[i].fps && video_seconds == video_presets[i].seconds)
-						{
-							flags |= MF_CHECKED;
-						}
-						AppendMenu(hMenu, flags, 4000 + i, restext);
-					}
-
-					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
-
-					AppendMenu(hMenu, MF_STRING, 8000, L"About...");
-
-					POINT pt;
-					GetCursorPos(&pt);
-					int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
-
-					if (selection == 1099) { // New image
-						if (rgba) { free(rgba); rgba = nullptr; }
-						if (rgba2) { free(rgba2); rgba2 = nullptr; }
-						clear_ref_images();
-						push_history(nullptr, w, h);
-						redraw();
-					}
-					else if (selection == 1100) { // Copy
-						copy_image(hWnd);
-					}
-					else if (selection == 1101) { // Paste
-						paste_image(hWnd);
-					}
-					else if (selection == 1102) { // Paste as reference
-						paste_image(hWnd, true);
-					}
-					else if (selection == 1103) { // CPU
-						is_cpu = !is_cpu;
-					}
-					else if (selection == 8000) // about
-					{
-						MessageBox(hWnd, L"Created by: Turánszki János\nhttps://github.com/turanszkij/mini-ai\n\nOpen source libraries used:\n- llama\n- stable-diffusion.cpp\n- stb_image.h\n- stb_image_write.h\n- stb_image_resize2.h\n", L"Mini-AI", MB_OK | MB_ICONINFORMATION);
-					}
-					else if (selection >= 4000) // video preset selection
-					{
-						selection -= 4000;
-						if (selection >= 0 && selection < ARRAYSIZE(video_presets))
-						{
-							video_fps = video_presets[selection].fps;
-							video_seconds = video_presets[selection].seconds;
-						}
-					}
-					else if (selection >= 3000) // resolution selection
-					{
-						selection -= 3000;
-						if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
-						{
-							w2 = resolution_presets[selection].w;
-							h2 = resolution_presets[selection].h;
-							redraw();
-						}
-					}
-					else if (selection >= 2000) // resolution scale selection
-					{
-						selection -= 2000;
-						if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
-						{
-							const float scale = float(scale_presets[selection]) / 100.0f;
-							w2 = int(w * scale);
-							h2 = int(h * scale);
-							redraw();
-						}
-					}
-
-					DestroyMenu(hMenu);
-					return 0;
+					if (GetFocus() != hEdit) paste_image(hWnd);
 				}
-			}
-
-			case WM_CTLCOLOREDIT:
-			{
-				HDC hdcEdit = (HDC)wParam;
-				SetTextColor(hdcEdit, RGB(220, 220, 220));
-				SetBkColor(hdcEdit, RGB(30, 30, 30));
-				static HBRUSH hEditBg = CreateSolidBrush(RGB(30, 30, 30));
-				return (INT_PTR)hEditBg;
+				else if (wParam == 'Z')
+				{
+					if (GetFocus() != hEdit) undo();
+				}
+				else if (wParam == 'Y')
+				{
+					if (GetFocus() != hEdit) redo();
+				}
 			}
 			break;
 
-			case WM_CTLCOLORBTN:
+		case WM_CONTEXTMENU:
+		{
+			if ((HWND)wParam == window)
 			{
-				HDC hdcEdit = (HDC)wParam;
-				SetTextColor(hdcEdit, RGB(220, 220, 220));
-				SetBkColor(hdcEdit, RGB(30, 30, 30));
-				static HBRUSH hEditBg = CreateSolidBrush(RGB(30, 30, 30));
-				return (INT_PTR)hEditBg;
-			}
-			break;
+				HMENU hMenu = CreatePopupMenu();
+				AppendMenu(hMenu, MF_STRING, 1099, L"New image");
+				AppendMenu(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
+				AppendMenu(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
+				AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
+				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
 
-			case WM_DROPFILES:
-			{
-				HDROP hdrop = (HDROP)wParam;
+				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+				for (int i = 0; i < ARRAYSIZE(scale_presets); ++i)
+				{
+					wchar_t restext[32] = {};
+					_snwprintf(restext, ARRAYSIZE(restext), L"%d%%", scale_presets[i]);
+					UINT flags = MF_STRING;
+					const float scale = float(scale_presets[i]) / 100.0f;
+					if (int(w * scale) == w2 && int(h * scale) == h2)
+					{
+						flags |= MF_CHECKED;
+					}
+					AppendMenu(hMenu, flags, 2000 + i, restext);
+				}
+
+				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+				for (int i = 0; i < ARRAYSIZE(resolution_presets); ++i)
+				{
+					wchar_t restext[32] = {};
+					_snwprintf(restext, ARRAYSIZE(restext), L"%dx%d px", resolution_presets[i].w, resolution_presets[i].h);
+					UINT flags = MF_STRING;
+					if (w2 == resolution_presets[i].w && h2 == resolution_presets[i].h)
+					{
+						flags |= MF_CHECKED;
+					}
+					AppendMenu(hMenu, flags, 3000 + i, restext);
+				}
+
+				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+				for (int i = 0; i < ARRAYSIZE(video_presets); ++i)
+				{
+					wchar_t restext[32] = {};
+					_snwprintf(restext, ARRAYSIZE(restext), L"video: %d fps, %d seconds", video_presets[i].fps, video_presets[i].seconds);
+					UINT flags = MF_STRING;
+					if (video_fps == video_presets[i].fps && video_seconds == video_presets[i].seconds)
+					{
+						flags |= MF_CHECKED;
+					}
+					AppendMenu(hMenu, flags, 4000 + i, restext);
+				}
+
+				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+				AppendMenu(hMenu, MF_STRING, 8000, L"About...");
+
 				POINT pt;
-				DragQueryPoint(hdrop, &pt);
+				GetCursorPos(&pt);
+				int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
 
-				UINT filecount = DragQueryFile(hdrop, 0xFFFFFFFF, nullptr, 0);
-				assert(filecount != 0);
-
-				bool is_ref_area = (pt.y >= h2);
-
-				for (UINT i = 0; i < filecount; ++i)
+				if (selection == 1099) { // New image
+					if (rgba) { free(rgba); rgba = nullptr; }
+					if (rgba2) { free(rgba2); rgba2 = nullptr; }
+					clear_ref_images();
+					push_history(nullptr, w, h);
+					redraw();
+				}
+				else if (selection == 1100) { // Copy
+					copy_image(hWnd);
+				}
+				else if (selection == 1101) { // Paste
+					paste_image(hWnd);
+				}
+				else if (selection == 1102) { // Paste as reference
+					paste_image(hWnd, true);
+				}
+				else if (selection == 1103) { // CPU
+					is_cpu = !is_cpu;
+				}
+				else if (selection == 8000) // about
 				{
-					wchar_t wfilename[1024] = {};
-					UINT res = DragQueryFile(hdrop, i, wfilename, ARRAYSIZE(wfilename));
-					if (res == 0)
+					MessageBox(hWnd, L"Created by: Turánszki János\nhttps://github.com/turanszkij/mini-ai\n\nOpen source libraries used:\n- llama\n- stable-diffusion.cpp\n- stb_image.h\n- stb_image_write.h\n- stb_image_resize2.h\n", L"Mini-AI", MB_OK | MB_ICONINFORMATION);
+				}
+				else if (selection >= 4000) // video preset selection
+				{
+					selection -= 4000;
+					if (selection >= 0 && selection < ARRAYSIZE(video_presets))
 					{
-						assert(0);
-						continue;
+						video_fps = video_presets[selection].fps;
+						video_seconds = video_presets[selection].seconds;
 					}
-					char filename[MAX_PATH] = {};
-					WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
-
-					if (is_ref_area)
+				}
+				else if (selection >= 3000) // resolution selection
+				{
+					selection -= 3000;
+					if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
 					{
-						int rw = 0, rh = 0, rc = 0;
-						unsigned char* rrgba = stbi_load(filename, &rw, &rh, &rc, 4);
-						if (rrgba)
-						{
-							ReferenceImage reference_image;
-							reference_image.rgba = rrgba;
-							reference_image.w = rw;
-							reference_image.h = rh;
-							reference_images.push_back(reference_image);
-						}
+						w2 = resolution_presets[selection].w;
+						h2 = resolution_presets[selection].h;
+						redraw();
 					}
-					else
+				}
+				else if (selection >= 2000) // resolution scale selection
+				{
+					selection -= 2000;
+					if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
 					{
-						if (rgba)
-						{
-							free(rgba);
-							rgba = nullptr;
-						}
-						if (rgba2)
-						{
-							free(rgba2);
-							rgba2 = nullptr;
-						}
-						rgba = stbi_load(filename, &w, &h, &c, 4);
-						if (rgba) push_history(rgba, w, h);
+						const float scale = float(scale_presets[selection]) / 100.0f;
+						w2 = int(w * scale);
+						h2 = int(h * scale);
+						redraw();
 					}
 				}
 
-				SetForegroundWindow(hWnd);
-				resize_window_to_image();
+				DestroyMenu(hMenu);
+				return 0;
+			}
+		}
+
+		case WM_CTLCOLOREDIT:
+		{
+			HDC hdcEdit = (HDC)wParam;
+			SetTextColor(hdcEdit, RGB(220, 220, 220));
+			SetBkColor(hdcEdit, RGB(30, 30, 30));
+			static HBRUSH hEditBg = CreateSolidBrush(RGB(30, 30, 30));
+			return (INT_PTR)hEditBg;
+		}
+		break;
+
+		case WM_CTLCOLORBTN:
+		{
+			HDC hdcEdit = (HDC)wParam;
+			SetTextColor(hdcEdit, RGB(220, 220, 220));
+			SetBkColor(hdcEdit, RGB(30, 30, 30));
+			static HBRUSH hEditBg = CreateSolidBrush(RGB(30, 30, 30));
+			return (INT_PTR)hEditBg;
+		}
+		break;
+
+		case WM_DROPFILES:
+		{
+			HDROP hdrop = (HDROP)wParam;
+			POINT pt;
+			DragQueryPoint(hdrop, &pt);
+
+			UINT filecount = DragQueryFile(hdrop, 0xFFFFFFFF, nullptr, 0);
+			assert(filecount != 0);
+
+			const bool is_ref_area = (pt.y > h2) && (pt.y < h2 + get_ref_container_height());
+
+			for (UINT i = 0; i < filecount; ++i)
+			{
+				wchar_t wfilename[1024] = {};
+				UINT res = DragQueryFile(hdrop, i, wfilename, ARRAYSIZE(wfilename));
+				if (res == 0)
+				{
+					assert(0);
+					continue;
+				}
+				char filename[MAX_PATH] = {};
+				WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
+
+				if (is_ref_area)
+				{
+					int rw = 0, rh = 0, rc = 0;
+					unsigned char* rrgba = stbi_load(filename, &rw, &rh, &rc, 4);
+					if (rrgba)
+					{
+						ReferenceImage reference_image;
+						reference_image.rgba = rrgba;
+						reference_image.w = rw;
+						reference_image.h = rh;
+						reference_images.push_back(reference_image);
+					}
+				}
+				else
+				{
+					if (rgba)
+					{
+						free(rgba);
+						rgba = nullptr;
+					}
+					if (rgba2)
+					{
+						free(rgba2);
+						rgba2 = nullptr;
+					}
+					rgba = stbi_load(filename, &w, &h, &c, 4);
+					if (rgba) push_history(rgba, w, h);
+				}
+			}
+
+			SetForegroundWindow(hWnd);
+			resize_window_to_image();
+			redraw();
+		}
+		break;
+
+		case WM_NOTIFY:
+		{
+			NMHDR* pNmhdr = (NMHDR*)lParam;
+			if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
+			{
+				HMENU hMenu = CreatePopupMenu();
+				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (Z-Image)");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_SD3 ? MF_CHECKED : 0), 103, L"Generate New Image (Stable Diffusion 3.5)");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 104, L"Edit Image (Flux 2)");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 VL)");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
+
+				RECT rc;
+				GetWindowRect(hBtnGenerate, &rc);
+				int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, rc.left, rc.bottom, 0, hWnd, NULL);
+
+				switch (selection)
+				{
+				default:
+				case 101:
+					mode = MODE_IMAGE_GENERATE_ZIMAGE;
+					break;
+				case 102:
+					mode = MODE_IMAGE_GENERATE_FLUX2;
+					break;
+				case 103:
+					mode = MODE_IMAGE_GENERATE_SD3;
+					break;
+				case 104:
+					mode = MODE_IMAGE_EDIT;
+					break;
+				case 105:
+					mode = MODE_ASK;
+					break;
+				case 106:
+					mode = MODE_VIDEO;
+					break;
+				}
+
+				DestroyMenu(hMenu);
+
+				redraw();
+				return 0;
+			}
+		}
+		break;
+
+		case WM_LBUTTONDOWN:
+		{
+			int mouse_x = LOWORD(lParam);
+			int mouse_y = HIWORD(lParam);
+
+			// Check clicks inside reference image close rect to delete items
+			if (mouse_y >= h2 && mouse_y < h2 + get_ref_container_height())
+			{
+				for (size_t i = 0; i < reference_images.size(); ++i)
+				{
+					if (PtInRect(&reference_images[i].close_rect, POINT{ mouse_x, mouse_y }))
+					{
+						if (reference_images[i].rgba) free(reference_images[i].rgba);
+						reference_images.erase(reference_images.begin() + i);
+						redraw();
+						break;
+					}
+				}
+			}
+
+			if (mouse_y >= h2 + get_ref_container_height() && mouse_y <= h2 + get_ref_container_height() + splitter_thickness)
+			{
+				is_dragging = true;
+				SetCapture(hWnd);
+			}
+		}
+		break;
+
+		case WM_LBUTTONUP:
+			if (is_dragging)
+			{
+				is_dragging = false;
+				ReleaseCapture();
 				redraw();
 			}
 			break;
 
-			case WM_NOTIFY:
+		case WM_MOUSEMOVE:
+		{
+			int mouse_y = HIWORD(lParam);
+
+			if (is_dragging)
 			{
-				NMHDR* pNmhdr = (NMHDR*)lParam;
-				if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
+				RECT rc;
+				GetClientRect(hWnd, &rc);
+				int proposed_height = rc.bottom - button_height - mouse_y - (splitter_thickness / 2);
+				if (proposed_height > 40 && proposed_height < (rc.bottom - 100 - button_height - get_ref_container_height()))
 				{
-					HMENU hMenu = CreatePopupMenu();
-					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (Z-Image)");
-					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
-					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_SD3 ? MF_CHECKED : 0), 103, L"Generate New Image (Stable Diffusion 3.5)");
-					AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 104, L"Edit Image (Flux 2)");
-					AppendMenu(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 VL)");
-					AppendMenu(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
-
-					RECT rc;
-					GetWindowRect(hBtnGenerate, &rc);
-					int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, rc.left, rc.bottom, 0, hWnd, NULL);
-
-					switch (selection)
-					{
-					default:
-					case 101:
-						mode = MODE_IMAGE_GENERATE_ZIMAGE;
-						break;
-					case 102:
-						mode = MODE_IMAGE_GENERATE_FLUX2;
-						break;
-					case 103:
-						mode = MODE_IMAGE_GENERATE_SD3;
-						break;
-					case 104:
-						mode = MODE_IMAGE_EDIT;
-						break;
-					case 105:
-						mode = MODE_ASK;
-						break;
-					case 106:
-						mode = MODE_VIDEO;
-						break;
-					}
-
-					SetGenerateButtonText();
-
-					DestroyMenu(hMenu);
-
-					redraw();
-					return 0;
-				}
-			}
-			break;
-
-			case WM_LBUTTONDOWN:
-			{
-				int mouse_x = LOWORD(lParam);
-				int mouse_y = HIWORD(lParam);
-
-				// Check clicks inside reference image close rect to delete items
-				if (mouse_y >= h2 && mouse_y < h2 + get_ref_container_height())
-				{
-					for (size_t i = 0; i < reference_images.size(); ++i)
-					{
-						if (PtInRect(&reference_images[i].close_rect, POINT{ mouse_x, mouse_y }))
-						{
-							if (reference_images[i].rgba) free(reference_images[i].rgba);
-							reference_images.erase(reference_images.begin() + i);
-							redraw();
-							break;
-						}
-					}
-				}
-
-				if (mouse_y >= h2 + get_ref_container_height() && mouse_y <= h2 + get_ref_container_height() + splitter_thickness)
-				{
-					is_dragging = true;
-					SetCapture(hWnd);
-				}
-			}
-			break;
-
-			case WM_LBUTTONUP:
-				if (is_dragging)
-				{
-					is_dragging = false;
-					ReleaseCapture();
+					text_height = proposed_height;
+					w2 = rc.right;
+					h2 = rc.bottom - text_height - button_height - splitter_thickness - get_ref_container_height();
 					redraw();
 				}
-				break;
+			}
+		}
+		break;
 
-			case WM_MOUSEMOVE:
+		case WM_SETCURSOR:
+		{
+			POINT pt;
+			GetCursorPos(&pt);
+			ScreenToClient(hWnd, &pt);
+			if (is_dragging || (pt.y >= h2 + get_ref_container_height() && pt.y <= h2 + get_ref_container_height() + splitter_thickness))
 			{
-				int mouse_y = HIWORD(lParam);
-
-				if (is_dragging)
-				{
-					RECT rc;
-					GetClientRect(hWnd, &rc);
-					int proposed_height = rc.bottom - button_height - mouse_y - (splitter_thickness / 2);
-					if (proposed_height > 40 && proposed_height < (rc.bottom - 100 - button_height - get_ref_container_height()))
-					{
-						text_height = proposed_height;
-						w2 = rc.right;
-						h2 = rc.bottom - text_height - button_height - splitter_thickness - get_ref_container_height();
-						redraw();
-					}
-				}
+				SetCursor(LoadCursor(NULL, IDC_SIZENS));
+				return TRUE;
 			}
-			break;
+		}
 
-			case WM_SETCURSOR:
-			{
-				POINT pt;
-				GetCursorPos(&pt);
-				ScreenToClient(hWnd, &pt);
-				if (is_dragging || (pt.y >= h2 + get_ref_container_height() && pt.y <= h2 + get_ref_container_height() + splitter_thickness))
-				{
-					SetCursor(LoadCursor(NULL, IDC_SIZENS));
-					return TRUE;
-				}
-			}
-
-			default:
-				return DefWindowProc(hWnd, message, wParam, lParam);
-			}
-			return 0;
-		};
+		default:
+			return DefWindowProc(hWnd, message, wParam, lParam);
+		}
+		return 0;
+	};
 
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 	WNDCLASSEXW wcex = {};
@@ -2593,7 +2555,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		ti.lpszText = const_cast<wchar_t*>(text);
 
 		SendMessage(hwndTT, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-		};
+	};
 	AddToolTip(window, hBtnLoad, L"Load Image (Ctrl+O)");
 	AddToolTip(window, hBtnSave, L"Save Image (Ctrl+S)");
 	AddToolTip(window, hBtnCopy, L"Copy Image to Clipboard (Ctrl+C)");
@@ -2601,8 +2563,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	AddToolTip(window, hBtnUndo, L"Previous image");
 	AddToolTip(window, hBtnRedo, L"Next image");
 	AddToolTip(window, hBtnGenerate, L"Generate Image from Prompt (Ctrl+Enter). If there is already an image, it will be used as input to generation");
-
-	SetGenerateButtonText();
 
 	update_undo_redo_states();
 
@@ -2620,8 +2580,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	SetWindowTheme(hBtnGenerate, L"DarkMode_Explorer", NULL);
 	SetWindowTheme(hEdit, L"DarkMode_Explorer", NULL);
 
-	LoadPrompt(hEdit);
-
 	// keyboard shortcuts
 	ACCEL accels[] = {
 		{ FCONTROL | FVIRTKEY, 'O', ID_ACCEL_LOAD },
@@ -2629,6 +2587,32 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		{ FCONTROL | FVIRTKEY, VK_RETURN, ID_ACCEL_GENERATE }
 	};
 	HACCEL hAccel = CreateAcceleratorTable(accels, ARRAYSIZE(accels));
+
+	// Load prompt from prompt.txt if available:
+	_snwprintf(promptPath, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
+	std::ifstream file(promptPath);
+	if (file.is_open()) 
+	{
+		std::string prompt;
+		std::ifstream file(promptPath, std::ios::binary | std::ios::ate);
+		if (file.is_open())
+		{
+			size_t dataSize = (size_t)file.tellg();
+			file.seekg((std::streampos)0);
+			prompt.resize(dataSize + 1, 0);
+			file.read((char*)prompt.data(), dataSize);
+			file.close();
+		}
+		int cnt = MultiByteToWideChar(CP_UTF8, 0, prompt.c_str(), -1, nullptr, 0);
+		std::wstring wstr(cnt, 0);
+		MultiByteToWideChar(CP_UTF8, 0, prompt.c_str(), -1, wstr.data(), cnt);
+		SetWindowText(hEdit, wstr.c_str());
+		file.close();
+	}
+	else
+	{
+		SetWindowText(hEdit, L"A beautiful mountain landscape...");
+	}
 
 	while (!exiting)
 	{
