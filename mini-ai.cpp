@@ -1,4 +1,4 @@
-﻿#include <Windows.h>
+#include <Windows.h>
 #include <commdlg.h> // Common Dialogs for Load/Save
 
 #include <dwmapi.h> // DwmSetWindowAttribute
@@ -92,6 +92,7 @@ static int video_seconds = 2; // video generation total seconds
 static int text_height = 180; // textbox input height
 static const int button_height = 45; // height of all the buttons on the bottom row
 static const int splitter_thickness = 8; // image/textbox separator thickness
+static const int reference_image_area_height = 120; // fixed height area for reference images
 static bool is_dragging = false; // separator dragging
 static int progress = 0; // progress of current processing task
 static bool is_cpu = false; // cpu or gpu execution preference
@@ -109,6 +110,31 @@ static HWND hBtnClear = nullptr;
 static HWND hBtnGenerate = nullptr;
 static HWND hBtnUndo = nullptr;
 static HWND hBtnRedo = nullptr;
+
+struct ReferenceImage 
+{
+	unsigned char* rgba = nullptr;
+	int w = 0, h = 0;
+	RECT render_rect = {};
+	RECT close_rect = {};
+};
+static std::vector<ReferenceImage> reference_images;
+void clear_ref_images()
+{
+	for (auto& img : reference_images)
+	{
+		if (img.rgba) free(img.rgba);
+	}
+	reference_images.clear();
+}
+int get_ref_container_height()
+{
+	if (mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+	{
+		return reference_image_area_height;
+	}
+	return 0;
+}
 
 static const int scale_presets[] = { 50,100,200,300 };
 
@@ -146,7 +172,7 @@ struct HistoryEntry
 static std::vector<HistoryEntry> history;
 static int history_index = -1;
 
-void SavePrompt(HWND hEdit) 
+void SavePrompt(HWND hEdit)
 {
 	int length = GetWindowTextLength(hEdit);
 	std::wstring buffer(length, L'\0');
@@ -154,13 +180,13 @@ void SavePrompt(HWND hEdit)
 	wchar_t path[MAX_PATH] = {};
 	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
 	std::wofstream file(path);
-	if (file.is_open()) 
+	if (file.is_open())
 	{
 		file << buffer;
 		file.close();
 	}
 }
-void LoadPrompt(HWND hEdit) 
+void LoadPrompt(HWND hEdit)
 {
 	wchar_t path[MAX_PATH] = {};
 	_snwprintf(path, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
@@ -168,14 +194,14 @@ void LoadPrompt(HWND hEdit)
 	if (file.is_open()) {
 		std::wstring content;
 		std::wstring line;
-		while (std::getline(file, line)) 
+		while (std::getline(file, line))
 		{
 			content += line + L"\r\n";
 		}
-		if (!content.empty() && content.back() == L'\n') 
+		if (!content.empty() && content.back() == L'\n')
 		{
 			content.pop_back();
-			if (!content.empty() && content.back() == L'\r') 
+			if (!content.empty() && content.back() == L'\r')
 			{
 				content.pop_back();
 			}
@@ -183,7 +209,7 @@ void LoadPrompt(HWND hEdit)
 		SetWindowText(hEdit, content.c_str());
 		file.close();
 	}
-	else 
+	else
 	{
 		SetWindowText(hEdit, L"A beautiful mountain landscape...");
 	}
@@ -221,6 +247,12 @@ void SetGenerateButtonText()
 	}
 }
 
+void resize_window_to_image()
+{
+	RECT rc = { 0, 0, w, h + get_ref_container_height() + splitter_thickness + button_height + text_height};
+	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
+	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
 void redraw()
 {
 	wchar_t text[1024] = {};
@@ -244,7 +276,7 @@ void redraw()
 		rgba2 = stbir_resize_uint8_srgb(rgba, w, h, 0, (unsigned char*)malloc(w2 * h2 * 4), w2, h2, 0, STBIR_RGBA);
 	}
 
-	int y = h2 + splitter_thickness;
+	int y = h2 + get_ref_container_height() + splitter_thickness;
 
 	if (hEdit)
 	{
@@ -260,7 +292,7 @@ void redraw()
 	if (hBtnRedo)		MoveWindow(hBtnRedo, button_height * 5, y, button_height, button_height, TRUE);
 	if (hBtnGenerate)	MoveWindow(hBtnGenerate, button_height * 6, y, w2 - (button_height * 6), button_height, TRUE);
 
-	RECT rc = { 0, 0, w2, h2 + splitter_thickness + text_height + button_height };
+	RECT rc = { 0, 0, w2, h2 + get_ref_container_height() + splitter_thickness + text_height + button_height };
 	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
 	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 	InvalidateRect(window, NULL, TRUE);
@@ -277,7 +309,7 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 	int out_size = 0;
 	// Compress to PNG in memory
 	unsigned char* png_data = nullptr;
-	
+
 	if (raw_rgba != nullptr)
 	{
 		png_data = stbi_write_png_to_mem(raw_rgba, width * 4, width, height, 4, &out_size);
@@ -411,10 +443,8 @@ void load_image(HWND hWnd)
 		if (rgba)
 		{
 			push_history(rgba, w, h);
-			RECT rc = { 0, 0, w, h + button_height + text_height };
-			AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-			SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 			SetForegroundWindow(hWnd);
+			resize_window_to_image();
 			redraw();
 		}
 	}
@@ -462,7 +492,7 @@ void save_image(HWND hWnd)
 		// 1. Multi-Resolution ICO
 		if (ofn.nFilterIndex == 2 || check_extension(str_filename, ".ico"))
 		{
-			const int targetSizes[] = {256, 128, 64, 48, 32, 16};
+			const int targetSizes[] = { 256, 128, 64, 48, 32, 16 };
 
 			struct IconFrame {
 				int size;
@@ -640,7 +670,7 @@ void copy_image(HWND hWnd)
 		}
 	}
 }
-void paste_image(HWND hWnd)
+void paste_image(HWND hWnd, bool is_reference = false)
 {
 	if (!OpenClipboard(hWnd)) return;
 
@@ -662,18 +692,26 @@ void paste_image(HWND hWnd)
 
 				if (new_rgba)
 				{
-					if (rgba) free(rgba);
-					if (rgba2) { free(rgba2); rgba2 = nullptr; }
+					if (is_reference)
+					{
+						ReferenceImage reference_image;
+						reference_image.rgba = new_rgba;
+						reference_image.w = new_w;
+						reference_image.h = new_h;
+						reference_images.push_back(reference_image);
+					}
+					else
+					{
+						if (rgba) free(rgba);
+						if (rgba2) { free(rgba2); rgba2 = nullptr; }
 
-					rgba = new_rgba;
-					w = new_w;
-					h = new_h;
+						rgba = new_rgba;
+						w = new_w;
+						h = new_h;
 
-					push_history(rgba, w, h);
-
-					RECT rc = { 0, 0, w, h + button_height + text_height };
-					AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-					SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+						push_history(rgba, w, h);
+					}
+					resize_window_to_image();
 					redraw();
 				}
 				return;
@@ -712,18 +750,26 @@ void paste_image(HWND hWnd)
 		}
 		GlobalUnlock(hData);
 
-		if (rgba) free(rgba);
-		if (rgba2) { free(rgba2); rgba2 = nullptr; }
+		if (is_reference)
+		{
+			ReferenceImage reference_image;
+			reference_image.rgba = pixels;
+			reference_image.w = width;
+			reference_image.h = height;
+			reference_images.push_back(reference_image);
+		}
+		else
+		{
+			if (rgba) free(rgba);
+			if (rgba2) { free(rgba2); rgba2 = nullptr; }
 
-		rgba = pixels;
-		w = width;
-		h = height;
+			rgba = pixels;
+			w = width;
+			h = height;
 
-		push_history(rgba, w, h);
-
-		RECT rc = { 0, 0, w, h + button_height + text_height };
-		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-		SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+			push_history(rgba, w, h);
+		}
+		resize_window_to_image();
 		redraw();
 	}
 	CloseClipboard();
@@ -849,7 +895,7 @@ void generation()
 			current_download.clear();
 			progress = 0;
 			InvalidateRect(window, NULL, TRUE);
-		};
+			};
 
 		if (mode == MODE_ASK)
 		{
@@ -923,12 +969,12 @@ void generation()
 				std::wstring wstr(cnt, 0);
 				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
 				OutputDebugString(wstr.c_str());
-			};
+				};
 			auto my_llama_progress_callback = [](float in_progress, void* user_data) {
 				progress = int(in_progress * 100);
 				redraw();
 				return true;
-			};
+				};
 			auto post_description = [](std::string result_text) {
 				// text can contain leading spaces and other stuff for some reason:
 				while (!result_text.empty() &&
@@ -959,7 +1005,7 @@ void generation()
 				std::wstring wstr(cnt, 0);
 				MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
 				SetWindowText(hEdit, wstr.c_str());
-			};
+				};
 
 			ggml_backend_load_all_from_path(u8_dll_dir);
 			llama_log_set(llama_callback, nullptr);
@@ -1386,11 +1432,11 @@ void generation()
 				std::wstring wstr(cnt, 0);
 				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
 				OutputDebugString(wstr.c_str());
-			};
+				};
 			auto sd_callback = [](int step, int steps, float time, void* data) {
 				progress = int(float(step) / float(steps) * 100);
 				redraw();
-			};
+				};
 			auto sd_preview = [](int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data) {
 				if (frame_count == 0)
 					return;
@@ -1415,7 +1461,7 @@ void generation()
 					dst.a = 255;
 				}
 				redraw();
-			};
+				};
 
 			sd_set_log_callback(sd_log, nullptr);
 			sd_set_progress_callback(sd_callback, nullptr);
@@ -1490,6 +1536,32 @@ void generation()
 						ref_img.data = scaled;
 					}
 					vid_params.init_image = ref_img;
+
+					// Additional reference images
+					std::vector<sd_image_t> sd_reference_images;
+					for (const auto& rimg : reference_images)
+					{
+						if (rimg.rgba && rimg.w > 0 && rimg.h > 0)
+						{
+							sd_image_t sdimg = {};
+							sdimg.width = rimg.w;
+							sdimg.height = rimg.h;
+							sdimg.channel = 3;
+							sdimg.data = (uint8_t*)malloc(rimg.w * rimg.h * 3);
+							for (int i = 0; i < rimg.w * rimg.h; ++i)
+							{
+								sdimg.data[i * 3 + 0] = rimg.rgba[i * 4 + 0];
+								sdimg.data[i * 3 + 1] = rimg.rgba[i * 4 + 1];
+								sdimg.data[i * 3 + 2] = rimg.rgba[i * 4 + 2];
+							}
+							sd_reference_images.push_back(sdimg);
+						}
+					}
+					if (!sd_reference_images.empty())
+					{
+						vid_params.control_frames = sd_reference_images.data();
+						vid_params.control_frames_size = (int)sd_reference_images.size();
+					}
 
 					sd_audio_t* audio = nullptr;
 					sd_image_t* frames = nullptr;
@@ -1634,6 +1706,10 @@ void generation()
 						final_errors = progress_errors;
 					}
 					if (vid_params.init_image.data) free(vid_params.init_image.data);
+					for (auto& sdimg : sd_reference_images)
+					{
+						if (sdimg.data) free(sdimg.data);
+					}
 				}
 				else
 				{
@@ -1672,9 +1748,10 @@ void generation()
 						img_params.sample_params.guidance.txt_cfg = 3.5f;
 					}
 
-					sd_image_t ref_img = {};
+					std::vector<sd_image_t> sd_reference_images;
 					if (mode == MODE_IMAGE_EDIT)
 					{
+						sd_image_t ref_img = {};
 						if (rgba2 != nullptr)
 						{
 							ref_img.width = w2;
@@ -1701,9 +1778,36 @@ void generation()
 								ref_img.data[i * 3 + 2] = rgba[i * 4 + 2];
 							}
 						}
-						// Note: image edit is much better with ref_images instead of using init_image, but requires special support from the model
-						img_params.ref_images = &ref_img;
-						img_params.ref_images_count = 1;
+						if (ref_img.data)
+						{
+							sd_reference_images.push_back(ref_img);
+						}
+
+						// Additional reference images
+						for (const auto& rimg : reference_images)
+						{
+							if (rimg.rgba && rimg.w > 0 && rimg.h > 0)
+							{
+								sd_image_t sdimg = {};
+								sdimg.width = rimg.w;
+								sdimg.height = rimg.h;
+								sdimg.channel = 3;
+								sdimg.data = (uint8_t*)malloc(rimg.w * rimg.h * 3);
+								for (int i = 0; i < rimg.w * rimg.h; ++i)
+								{
+									sdimg.data[i * 3 + 0] = rimg.rgba[i * 4 + 0];
+									sdimg.data[i * 3 + 1] = rimg.rgba[i * 4 + 1];
+									sdimg.data[i * 3 + 2] = rimg.rgba[i * 4 + 2];
+								}
+								sd_reference_images.push_back(sdimg);
+							}
+						}
+					}
+
+					if (!sd_reference_images.empty())
+					{
+						img_params.ref_images = sd_reference_images.data();
+						img_params.ref_images_count = (int)sd_reference_images.size();
 					}
 
 					sd_image_t* image = nullptr;
@@ -1735,7 +1839,11 @@ void generation()
 					{
 						final_errors = progress_errors;
 					}
-					if (ref_img.data) free(ref_img.data);
+
+					for (auto& sdimg : sd_reference_images)
+					{
+						if (sdimg.data) free(sdimg.data);
+					}
 				}
 				free_sd_ctx(sd_ctx);
 			}
@@ -1743,7 +1851,7 @@ void generation()
 			while (true)
 			{
 				size_t n = ggml_backend_reg_count();
-				if (n == 0) break;
+				if (0 == n) break;
 				ggml_backend_reg_t reg = ggml_backend_reg_get(n - 1);
 				if (reg)
 				{
@@ -1760,7 +1868,7 @@ void generation()
 		progress = 0;
 		SetGenerateButtonText();
 		redraw();
-	});
+		});
 
 	SetThreadDescription((HANDLE)worker.native_handle(), L"AI");
 
@@ -1779,12 +1887,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			case WM_SIZE:
 			{
 				w2 = LOWORD(lParam);
-				h2 = HIWORD(lParam) - text_height - button_height - splitter_thickness;
+				h2 = HIWORD(lParam) - text_height - button_height - splitter_thickness - get_ref_container_height();
 				redraw();
 			}
 			break;
 			case WM_DESTROY:
 				exiting = true;
+				clear_ref_images();
 				PostQuitMessage(0);
 				break;
 			case WM_ERASEBKGND:
@@ -1944,8 +2053,87 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					DeleteObject(hProgressFont);
 				}
 
+				if (mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+				{
+					// Draw reference image list:
+					RECT ref_rect = { 0, h2, w2, h2 + get_ref_container_height() };
+					HBRUSH hRefBg = CreateSolidBrush(RGB(20, 20, 20));
+					FillRect(hdc, &ref_rect, hRefBg);
+					DeleteObject(hRefBg);
+
+					if (reference_images.empty())
+					{
+						SetBkMode(hdc, TRANSPARENT);
+						HFONT hRefHintFont = CreateFont(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+						HFONT hOldFont = (HFONT)SelectObject(hdc, hRefHintFont);
+						SetTextColor(hdc, RGB(120, 120, 120));
+						DrawText(hdc, L"Drop additional reference images here", -1, &ref_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						SelectObject(hdc, hOldFont);
+						DeleteObject(hRefHintFont);
+					}
+					else
+					{
+						int current_x = 8;
+						const int margin = 8;
+						const int target_h = get_ref_container_height() - (margin * 2);
+
+						for (size_t i = 0; i < reference_images.size(); ++i)
+						{
+							ReferenceImage& reference_image = reference_images[i];
+							int target_w = (int)((float)reference_image.w * ((float)target_h / (float)reference_image.h));
+							if (target_w <= 0) target_w = target_h;
+
+							reference_image.render_rect = { current_x, h2 + margin, current_x + target_w, h2 + margin + target_h };
+							reference_image.close_rect = { reference_image.render_rect.right - 18, reference_image.render_rect.top + 2, reference_image.render_rect.right - 2, reference_image.render_rect.top + 18 };
+
+							// Scale RGBA image for reference view
+							unsigned char* scaled_ref = stbir_resize_uint8_srgb(reference_image.rgba, reference_image.w, reference_image.h, 0, (unsigned char*)malloc(target_w * target_h * 4), target_w, target_h, 0, STBIR_RGBA);
+							if (scaled_ref)
+							{
+								struct BitmapInfoEx {
+									BITMAPINFOHEADER hdr = {};
+									DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
+								};
+								BitmapInfoEx bi = {};
+								bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
+								bi.hdr.biPlanes = 1;
+								bi.hdr.biBitCount = 32;
+								bi.hdr.biCompression = BI_BITFIELDS;
+								bi.hdr.biWidth = target_w;
+								bi.hdr.biHeight = -target_h;
+								SetDIBitsToDevice(hdc, current_x, h2 + margin, target_w, target_h, 0, 0, 0, target_h, scaled_ref, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
+								free(scaled_ref);
+							}
+
+							// Draw border around reference image
+							HPEN hPen = CreatePen(PS_SOLID, 3, RGB(120, 120, 120));
+							HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
+							HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
+							Rectangle(hdc, reference_image.render_rect.left, reference_image.render_rect.top, reference_image.render_rect.right, reference_image.render_rect.bottom);
+							SelectObject(hdc, hOldBrush);
+							SelectObject(hdc, hOldPen);
+							DeleteObject(hPen);
+
+							// Render close badge on top-right corner of reference item
+							HBRUSH hBadgeBrush = CreateSolidBrush(RGB(180, 40, 40));
+							FillRect(hdc, &reference_image.close_rect, hBadgeBrush);
+							DeleteObject(hBadgeBrush);
+
+							SetBkMode(hdc, TRANSPARENT);
+							SetTextColor(hdc, RGB(255, 255, 255));
+							HFONT hXFont = CreateFont(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+							HFONT hOldF = (HFONT)SelectObject(hdc, hXFont);
+							DrawText(hdc, L"\u2715", -1, &reference_image.close_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+							SelectObject(hdc, hOldF);
+							DeleteObject(hXFont);
+
+							current_x += target_w + margin;
+						}
+					}
+				}
+
 				HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
-				RECT splitter_rect = { 0, h2, w2, h2 + splitter_thickness };
+				RECT splitter_rect = { 0, h2 + get_ref_container_height(), w2, h2 + get_ref_container_height() + splitter_thickness };
 				FillRect(hdc, &splitter_rect, hSplitterBrush);
 				DeleteObject(hSplitterBrush);
 
@@ -1968,17 +2156,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						break;
 					case IDC_COPY_BUTTON:
 						copy_image(hWnd);
-						break; 
+						break;
 					case IDC_CLEAR_BUTTON:
 						if (rgba) { free(rgba); rgba = nullptr; }
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						clear_ref_images();
 						push_history(nullptr, w, h);
 						redraw();
 						break;
 					case IDC_GENERATE_BUTTON:
 					case ID_ACCEL_GENERATE:
 						generation();
-						break; 
+						break;
 					case IDC_UNDO_BUTTON:
 						undo();
 						break;
@@ -1987,25 +2176,25 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						break;
 					}
 				}
-				break; 
-			
+				break;
+
 			case WM_KEYDOWN:
-			if (GetKeyState(VK_CONTROL) & 0x8000)
-			{
-				if (wParam == 'V')
+				if (GetKeyState(VK_CONTROL) & 0x8000)
 				{
-					if (GetFocus() != hEdit) paste_image(hWnd);
+					if (wParam == 'V')
+					{
+						if (GetFocus() != hEdit) paste_image(hWnd);
+					}
+					else if (wParam == 'Z')
+					{
+						if (GetFocus() != hEdit) undo();
+					}
+					else if (wParam == 'Y')
+					{
+						if (GetFocus() != hEdit) redo();
+					}
 				}
-				else if (wParam == 'Z')
-				{
-					if (GetFocus() != hEdit) undo();
-				}
-				else if (wParam == 'Y')
-				{
-					if (GetFocus() != hEdit) redo();
-				}
-			}
-			break;
+				break;
 
 			case WM_CONTEXTMENU:
 			{
@@ -2015,7 +2204,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenu(hMenu, MF_STRING, 1099, L"New image");
 					AppendMenu(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
 					AppendMenu(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
-					AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1102, L"Use CPU (slow)");
+					AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
+					AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
 
 					AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
@@ -2071,6 +2261,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					if (selection == 1099) { // New image
 						if (rgba) { free(rgba); rgba = nullptr; }
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
+						clear_ref_images();
 						push_history(nullptr, w, h);
 						redraw();
 					}
@@ -2080,7 +2271,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					else if (selection == 1101) { // Paste
 						paste_image(hWnd);
 					}
-					else if (selection == 1102) { // CPU
+					else if (selection == 1102) { // Paste as reference
+						paste_image(hWnd, true);
+					}
+					else if (selection == 1103) { // CPU
 						is_cpu = !is_cpu;
 					}
 					else if (selection == 8000) // about
@@ -2146,8 +2340,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			case WM_DROPFILES:
 			{
 				HDROP hdrop = (HDROP)wParam;
+				POINT pt;
+				DragQueryPoint(hdrop, &pt);
+
 				UINT filecount = DragQueryFile(hdrop, 0xFFFFFFFF, nullptr, 0);
 				assert(filecount != 0);
+
+				bool is_ref_area = (pt.y >= h2);
+
 				for (UINT i = 0; i < filecount; ++i)
 				{
 					wchar_t wfilename[1024] = {};
@@ -2159,23 +2359,39 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					}
 					char filename[MAX_PATH] = {};
 					WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
-					if (rgba)
+
+					if (is_ref_area)
 					{
-						free(rgba);
-						rgba = nullptr;
+						int rw = 0, rh = 0, rc = 0;
+						unsigned char* rrgba = stbi_load(filename, &rw, &rh, &rc, 4);
+						if (rrgba)
+						{
+							ReferenceImage reference_image;
+							reference_image.rgba = rrgba;
+							reference_image.w = rw;
+							reference_image.h = rh;
+							reference_images.push_back(reference_image);
+						}
 					}
-					if (rgba2)
+					else
 					{
-						free(rgba2);
-						rgba2 = nullptr;
+						if (rgba)
+						{
+							free(rgba);
+							rgba = nullptr;
+						}
+						if (rgba2)
+						{
+							free(rgba2);
+							rgba2 = nullptr;
+						}
+						rgba = stbi_load(filename, &w, &h, &c, 4);
+						if (rgba) push_history(rgba, w, h);
 					}
-					rgba = stbi_load(filename, &w, &h, &c, 4);
-					if (rgba) push_history(rgba, w, h);
 				}
-				RECT rc = { 0, 0, w, h +  splitter_thickness + button_height + text_height };
-				AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-				SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+
 				SetForegroundWindow(hWnd);
+				resize_window_to_image();
 				redraw();
 			}
 			break;
@@ -2223,6 +2439,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					SetGenerateButtonText();
 
 					DestroyMenu(hMenu);
+
+					redraw();
 					return 0;
 				}
 			}
@@ -2230,8 +2448,25 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 			case WM_LBUTTONDOWN:
 			{
+				int mouse_x = LOWORD(lParam);
 				int mouse_y = HIWORD(lParam);
-				if (mouse_y >= h2 && mouse_y <= h2 + splitter_thickness)
+
+				// Check clicks inside reference image close rect to delete items
+				if (mouse_y >= h2 && mouse_y < h2 + get_ref_container_height())
+				{
+					for (size_t i = 0; i < reference_images.size(); ++i)
+					{
+						if (PtInRect(&reference_images[i].close_rect, POINT{ mouse_x, mouse_y }))
+						{
+							if (reference_images[i].rgba) free(reference_images[i].rgba);
+							reference_images.erase(reference_images.begin() + i);
+							redraw();
+							break;
+						}
+					}
+				}
+
+				if (mouse_y >= h2 + get_ref_container_height() && mouse_y <= h2 + get_ref_container_height() + splitter_thickness)
 				{
 					is_dragging = true;
 					SetCapture(hWnd);
@@ -2257,11 +2492,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					RECT rc;
 					GetClientRect(hWnd, &rc);
 					int proposed_height = rc.bottom - button_height - mouse_y - (splitter_thickness / 2);
-					if (proposed_height > 40 && proposed_height < (rc.bottom - 100 - button_height))
+					if (proposed_height > 40 && proposed_height < (rc.bottom - 100 - button_height - get_ref_container_height()))
 					{
 						text_height = proposed_height;
 						w2 = rc.right;
-						h2 = rc.bottom - text_height - button_height - splitter_thickness;
+						h2 = rc.bottom - text_height - button_height - splitter_thickness - get_ref_container_height();
 						redraw();
 					}
 				}
@@ -2273,7 +2508,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				POINT pt;
 				GetCursorPos(&pt);
 				ScreenToClient(hWnd, &pt);
-				if (is_dragging || (pt.y >= h2 && pt.y <= h2 + splitter_thickness))
+				if (is_dragging || (pt.y >= h2 + get_ref_container_height() && pt.y <= h2 + get_ref_container_height() + splitter_thickness))
 				{
 					SetCursor(LoadCursor(NULL, IDC_SIZENS));
 					return TRUE;
@@ -2302,7 +2537,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
 	RegisterClassEx(&wcex);
 
-	RECT wr = { 0, 0, w, h + splitter_thickness + text_height + button_height };
+	RECT wr = { 0, 0, w, h + get_ref_container_height() + splitter_thickness + text_height + button_height };
 	DWORD window_style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
 	AdjustWindowRect(&wr, window_style, FALSE);
 	int window_width = wr.right - wr.left;
@@ -2358,7 +2593,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		ti.lpszText = const_cast<wchar_t*>(text);
 
 		SendMessage(hwndTT, TTM_ADDTOOLW, 0, (LPARAM)&ti);
-	};
+		};
 	AddToolTip(window, hBtnLoad, L"Load Image (Ctrl+O)");
 	AddToolTip(window, hBtnSave, L"Save Image (Ctrl+S)");
 	AddToolTip(window, hBtnCopy, L"Copy Image to Clipboard (Ctrl+C)");

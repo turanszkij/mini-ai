@@ -2,18 +2,18 @@
 A super simple graphical application for easy AI generation tasks locally on your machine.
 Made in C++ and WinAPI, no external dependencies.
 
-<img width="24%" src=".github/image0.png" /> <img width="24%" src=".github/image1.png" /> <img width="24%" src=".github/image2.png" /> <img width="24%" src=".github/image3.png" />
+<img width="18%" src=".github/image0.png" /> <img width="18%" src=".github/image1.png" /> <img width="18%" src=".github/image2.png" /> <img width="18%" src=".github/image3.png" /> <img width="15.8%" src=".github/image4.png" />
 
 ## Features
 - Image generation from text: You simply type a text and the image will be generated above. Supported AI models:
     - Z-Image Turbo
     - Flux 2 Klein
     - Stable Diffusion 3.5 Large
-- Image Editing: Edit the current image (that was generated or opened) with a text description
+- Image Editing: Edit the current image (that was generated or opened) with a text description and optionally by using other reference images
     - Flux 2 Klein
 - Ask: enter a text and the AI will answer. If an image is also opened, the AI can see it and use it for the answer.
     - Qwen 3 VL
-- Video: generate a video from text prompt, and/or from the currently shown image
+- Video: generate a video from text prompt, and/or from the currently shown image, and optionally additional reference images
     - Wan 2.2
 - Copy-paste, undo-redo, resize, save, load, drag and drop, multi-resolution ICO generation
 
