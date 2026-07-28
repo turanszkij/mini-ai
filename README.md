@@ -1,5 +1,5 @@
 # Mini-AI <img align="left" width="42px" src=".github/logo.png" /> [![Github Build Status](https://github.com/turanszkij/mini-ai/workflows/Build/badge.svg)](https://github.com/turanszkij/mini-ai/actions)
-A super simple graphical application for easy AI generation tasks locally on your machine.<br/>
+A tiny graphical application for running simple AI generation tasks locally on your machine.<br/>
 Made in C++ and WinAPI, no external dependencies.
 
 <img width="24%" src=".github/image0.png" /> <img width="24%" src=".github/image1.png" /> <img width="24%" src=".github/image3.png" /> <img width="24%" src=".github/image2.png" />
