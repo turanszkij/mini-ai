@@ -28,7 +28,6 @@
 #include <fstream>
 #include <atomic>
 #include <filesystem>
-#include <mutex>
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -136,6 +135,16 @@ static const VideoPreset video_presets[] = {
 	{24, 4},
 	{24, 10},
 };
+
+struct HistoryEntry
+{
+	unsigned char* data;
+	int size;
+	int w, h;
+	std::wstring prompt;
+};
+static std::vector<HistoryEntry> history;
+static int history_index = -1;
 
 void SavePrompt(HWND hEdit) 
 {
@@ -315,7 +324,7 @@ void AddToolTip(HWND hwndParent, HWND hwndTarget, const wchar_t* text)
 void redraw()
 {
 	wchar_t text[1024] = {};
-	if (progress > 0)
+	if (is_generating.load())
 	{
 		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%)", w2, h2, progress);
 	}
@@ -359,17 +368,6 @@ void redraw()
 	UpdateWindow(window);
 }
 
-
-struct HistoryEntry 
-{
-	unsigned char* data;
-	int size;
-	int w, h;
-	std::wstring prompt;
-};
-static std::vector<HistoryEntry> history;
-static int history_index = -1;
-static std::mutex history_mutex;
 void update_undo_redo_states()
 {
 	EnableWindow(hBtnUndo, history_index > 0);
@@ -385,8 +383,6 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 	{
 		png_data = stbi_write_png_to_mem(raw_rgba, width * 4, width, height, 4, &out_size);
 	}
-
-	std::scoped_lock lock(history_mutex);
 
 	// If we undo'd and then generate/load a new image, clear the "redo" future
 	while (history.size() > (size_t)(history_index + 1))
@@ -446,7 +442,6 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 }
 void load_history_entry()
 {
-	std::lock_guard<std::mutex> lock(history_mutex);
 	if (history_index < 0 || history_index >= (int)history.size()) return;
 
 	if (rgba) { free(rgba); rgba = nullptr; }
@@ -469,7 +464,7 @@ void load_history_entry()
 
 	redraw();
 }
-void handle_undo()
+void undo()
 {
 	if (history_index > 0) {
 		history_index--;
@@ -477,7 +472,7 @@ void handle_undo()
 	}
 	update_undo_redo_states();
 }
-void handle_redo()
+void redo()
 {
 	if (history_index < (int)history.size() - 1) {
 		history_index++;
@@ -485,108 +480,357 @@ void handle_redo()
 	}
 	update_undo_redo_states();
 }
-
-void sd_log(enum sd_log_level_t level, const char* text, void* data)
+void load_image(HWND hWnd)
 {
-	if (level == SD_LOG_DEBUG)
+	wchar_t szFile[MAX_PATH] = {};
+	OPENFILENAMEW ofn = {};
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hWnd;
+	ofn.lpstrFile = szFile;
+	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
+	ofn.lpstrFilter = L"Images\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files\0*.*\0";
+	ofn.nFilterIndex = 1;
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+
+	if (GetOpenFileName(&ofn))
+	{
+		char filename[MAX_PATH] = {};
+		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
+
+		if (rgba)
+		{
+			free(rgba);
+			rgba = nullptr;
+		}
+		if (rgba2)
+		{
+			free(rgba2);
+			rgba2 = nullptr;
+		}
+		rgba = stbi_load(filename, &w, &h, &c, 4);
+
+		if (rgba)
+		{
+			push_history(rgba, w, h);
+			RECT rc = { 0, 0, w, h + button_height + text_height };
+			AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+			SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+			SetForegroundWindow(hWnd);
+			redraw();
+		}
+	}
+}
+void save_image(HWND hWnd)
+{
+	if (!rgba2)
+	{
+		MessageBox(hWnd, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
 		return;
-	if (level == SD_LOG_ERROR)
-	{
-		progress_errors += text;
-		InvalidateRect(window, NULL, TRUE);
 	}
-	int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
-	std::wstring wstr(cnt, 0);
-	MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
-	OutputDebugString(wstr.c_str());
-}
 
-void sd_callback(int step, int steps, float time, void* data)
-{
-	progress = int(float(step) / float(steps) * 100);
-	redraw();
-}
+	wchar_t szFile[MAX_PATH] = {};
+	OPENFILENAMEW ofn = {};
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hWnd;
+	ofn.lpstrFile = szFile;
+	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
 
-void sd_preview(int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data)
-{
-	if (frame_count == 0)
-		return;
-	sd_image_t* image = &frames[frame_count - 1];
-	w = image->width;
-	h = image->height;
-	if (rgba)
-	{
-		free(rgba);
-		rgba = nullptr;
-	}
-	rgba = (unsigned char*)malloc(w * h * 4);
-	struct Color3 { unsigned char r, g, b; };
-	struct Color4 { unsigned char r, g, b, a; };
-	for (int i = 0; i < w * h; ++i)
-	{
-		const Color3& src = ((Color3*)image->data)[i];
-		Color4& dst = ((Color4*)rgba)[i];
-		dst.r = src.r;
-		dst.g = src.g;
-		dst.b = src.b;
-		dst.a = 255;
-	}
-	redraw();
-}
+	// Default: PNG (Index 1), Supported: ICO, JPG, BMP, TGA
+	ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0"
+		L"ICO Icon (*.ico)\0*.ico\0"
+		L"JPEG Image (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0"
+		L"BMP Image (*.bmp)\0*.bmp\0"
+		L"TGA Image (*.tga)\0*.tga\0";
+	ofn.nFilterIndex = 1;
+	ofn.lpstrDefExt = L"png";
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
 
-void llama_callback(enum ggml_log_level level, const char* text, void* user_data) 
-{
-	if (level >= GGML_LOG_LEVEL_ERROR)
+	if (GetSaveFileName(&ofn))
 	{
-		progress_errors += text;
-	}
-	int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
-	std::wstring wstr(cnt, 0);
-	MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
-	OutputDebugString(wstr.c_str());
-}
+		char filename[MAX_PATH] = {};
+		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
 
-bool my_llama_progress_callback(float in_progress, void* user_data)
-{
-	progress = int(in_progress * 100);
-	redraw();
-	return true;
-}
+		int width = w2;
+		int height = h2;
+		bool success = false;
 
-void post_description(std::string result_text)
-{
-	// text can contain leading spaces and other stuff for some reason:
-	while (!result_text.empty() &&
-		(
-			result_text.front() == ' ' ||
-			result_text.front() == '\n' ||
-			result_text.front() == '-'
-			)
-		)
-	{
-		result_text.erase(result_text.begin());
-	}
-	// Text line endings should be Windows-like for textbox:
-	size_t pos = 0;
-	while ((pos = result_text.find('\n', pos)) != std::string::npos)
-	{
-		if (pos == 0 || result_text[pos - 1] != '\r')
-		{  // Avoid turning existing \r\n into \r\r\n
-			result_text.insert(pos, 1, '\r');
-			pos += 2;  // Skip past the \r\n we just inserted
+		std::string str_filename(filename);
+
+		auto check_extension = [](const std::string& str, const std::string& ext) {
+			return str.size() >= ext.size() && str.compare(str.size() - ext.size(), ext.size(), ext) == 0;
+			};
+
+		// 1. Multi-Resolution ICO
+		if (ofn.nFilterIndex == 2 || check_extension(str_filename, ".ico"))
+		{
+			const int targetSizes[] = {256, 128, 64, 48, 32, 16};
+
+			struct IconFrame {
+				int size;
+				int png_len;
+				unsigned char* png_bytes;
+			};
+
+			std::vector<IconFrame> frames;
+
+			for (int size : targetSizes)
+			{
+				if (size > width && size > height && size != 256) continue;
+
+				const unsigned char* srcPtr = rgba2;
+				std::vector<unsigned char> resized_buffer;
+
+				if (width != size || height != size)
+				{
+					resized_buffer.resize(size * size * 4);
+					stbir_resize_uint8_srgb(
+						rgba2, width, height, width * 4,
+						resized_buffer.data(), size, size, size * 4,
+						STBIR_RGBA
+					);
+					srcPtr = resized_buffer.data();
+				}
+
+				int png_len = 0;
+				unsigned char* png_bytes = stbi_write_png_to_mem(srcPtr, size * 4, size, size, 4, &png_len);
+				if (png_bytes)
+				{
+					frames.push_back({ size, png_len, png_bytes });
+				}
+			}
+
+			if (!frames.empty())
+			{
+#pragma pack(push, 1)
+				struct ICOHeader {
+					uint16_t idReserved = 0;
+					uint16_t idType = 1; // 1 = ICO
+					uint16_t idCount;
+				};
+
+				struct ICONDIRENTRY {
+					uint8_t  bWidth;
+					uint8_t  bHeight;
+					uint8_t  bColorCount = 0;
+					uint8_t  bReserved = 0;
+					uint16_t wPlanes = 1;
+					uint16_t wBitCount = 32;
+					uint32_t dwBytesInRes;
+					uint32_t dwImageOffset;
+				};
+#pragma pack(pop)
+
+				ICOHeader header;
+				header.idCount = static_cast<uint16_t>(frames.size());
+
+				uint32_t currentOffset = sizeof(ICOHeader) + static_cast<uint32_t>(frames.size() * sizeof(ICONDIRENTRY));
+
+				std::vector<ICONDIRENTRY> entries;
+				for (const auto& frame : frames)
+				{
+					ICONDIRENTRY entry;
+					entry.bWidth = (frame.size >= 256) ? 0 : static_cast<uint8_t>(frame.size);
+					entry.bHeight = (frame.size >= 256) ? 0 : static_cast<uint8_t>(frame.size);
+					entry.dwBytesInRes = static_cast<uint32_t>(frame.png_len);
+					entry.dwImageOffset = currentOffset;
+
+					entries.push_back(entry);
+					currentOffset += frame.png_len;
+				}
+
+				std::ofstream file(filename, std::ios::binary);
+				if (file.is_open())
+				{
+					file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+					file.write(reinterpret_cast<const char*>(entries.data()), entries.size() * sizeof(ICONDIRENTRY));
+
+					for (auto& frame : frames)
+					{
+						file.write(reinterpret_cast<const char*>(frame.png_bytes), frame.png_len);
+					}
+
+					success = file.good();
+					file.close();
+				}
+
+				for (auto& frame : frames)
+				{
+					STBIW_FREE(frame.png_bytes);
+				}
+			}
+		}
+		else if (ofn.nFilterIndex == 3 || check_extension(str_filename, ".jpg") || check_extension(str_filename, ".jpeg"))
+		{
+			success = stbi_write_jpg(filename, width, height, 4, rgba2, 90) != 0;
+		}
+		else if (ofn.nFilterIndex == 4 || check_extension(str_filename, ".bmp"))
+		{
+			success = stbi_write_bmp(filename, width, height, 4, rgba2) != 0;
+		}
+		else if (ofn.nFilterIndex == 5 || check_extension(str_filename, ".tga"))
+		{
+			success = stbi_write_tga(filename, width, height, 4, rgba2) != 0;
 		}
 		else
 		{
-			++pos;
+			success = stbi_write_png(filename, width, height, 4, rgba2, width * 4) != 0;
+		}
+
+		if (!success)
+		{
+			MessageBox(hWnd, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
 		}
 	}
-	int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
-	std::wstring wstr(cnt, 0);
-	MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
-	SetWindowText(hEdit, wstr.c_str());
+}
+void copy_image(HWND hWnd)
+{
+	int draw_height = h2;
+	if (!rgba2 || w2 <= 0 || draw_height <= 0)
+	{
+		MessageBox(hWnd, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
+		return;
+	}
+
+	size_t row_stride = w2 * 4;
+	size_t image_size = row_stride * draw_height;
+	size_t total_size = sizeof(BITMAPINFOHEADER) + image_size;
+
+	HGLOBAL hClipboardData = GlobalAlloc(GMEM_MOVEABLE, total_size);
+	if (!hClipboardData) return;
+
+	void* pData = GlobalLock(hClipboardData);
+	if (pData)
+	{
+		// Write standard DIB header chunk
+		BITMAPINFOHEADER* pHeader = (BITMAPINFOHEADER*)pData;
+		pHeader->biSize = sizeof(BITMAPINFOHEADER);
+		pHeader->biWidth = w2;
+		pHeader->biHeight = draw_height; // Positive = bottom-up DIB layout requirements
+		pHeader->biPlanes = 1;
+		pHeader->biBitCount = 32;
+		pHeader->biCompression = BI_RGB;
+		pHeader->biSizeImage = (DWORD)image_size;
+
+		// Clipboard DIB stores pixels bottom-to-top, flip vertical rows directly into memory block
+		unsigned char* pDestPixels = (unsigned char*)pData + sizeof(BITMAPINFOHEADER);
+		for (int y = 0; y < draw_height; ++y)
+		{
+			unsigned char* src_row = rgba2 + ((draw_height - 1 - y) * row_stride);
+			unsigned char* dst_row = pDestPixels + (y * row_stride);
+
+			// Reorder raw storage layer RGBA -> Clipboard BGRA channel alignment configurations
+			for (int x = 0; x < w2; ++x)
+			{
+				dst_row[x * 4 + 0] = src_row[x * 4 + 2]; // B
+				dst_row[x * 4 + 1] = src_row[x * 4 + 1]; // G
+				dst_row[x * 4 + 2] = src_row[x * 4 + 0]; // R
+				dst_row[x * 4 + 3] = src_row[x * 4 + 3]; // A
+			}
+		}
+		GlobalUnlock(hClipboardData);
+
+		if (OpenClipboard(hWnd))
+		{
+			EmptyClipboard();
+			SetClipboardData(CF_DIB, hClipboardData);
+			CloseClipboard();
+		}
+		else
+		{
+			GlobalFree(hClipboardData);
+		}
+	}
+}
+void paste_image(HWND hWnd)
+{
+	if (!OpenClipboard(hWnd)) return;
+
+	if (IsClipboardFormatAvailable(CF_HDROP))
+	{
+		HANDLE hDrop = GetClipboardData(CF_HDROP);
+		if (hDrop)
+		{
+			wchar_t wfilename[MAX_PATH] = {};
+			if (DragQueryFile((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
+			{
+				CloseClipboard();
+
+				char filename[MAX_PATH] = {};
+				WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
+
+				int new_w, new_h, new_c;
+				unsigned char* new_rgba = stbi_load(filename, &new_w, &new_h, &new_c, 4);
+
+				if (new_rgba)
+				{
+					if (rgba) free(rgba);
+					if (rgba2) { free(rgba2); rgba2 = nullptr; }
+
+					rgba = new_rgba;
+					w = new_w;
+					h = new_h;
+
+					push_history(rgba, w, h);
+
+					RECT rc = { 0, 0, w, h + button_height + text_height };
+					AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+					SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+					redraw();
+				}
+				return;
+			}
+		}
+	}
+
+	HANDLE hData = GetClipboardData(CF_DIB);
+	if (!hData)
+	{
+		CloseClipboard();
+		return;
+	}
+
+	BITMAPINFO* pbi = (BITMAPINFO*)GlobalLock(hData);
+	if (pbi)
+	{
+		int width = pbi->bmiHeader.biWidth;
+		int height = abs(pbi->bmiHeader.biHeight);
+
+		// Ensure RGBA format
+		unsigned char* pixels = (unsigned char*)malloc(width * height * 4);
+
+		// Simplified extraction (assumes 32-bit DIB)
+		unsigned char* src_bits = (unsigned char*)pbi + pbi->bmiHeader.biSize;
+		for (int y = 0; y < height; y++)
+		{
+			for (int x = 0; x < width; x++)
+			{
+				// Clipboard DIB is BGRA
+				pixels[(y * width + x) * 4 + 0] = src_bits[((height - 1 - y) * width + x) * 4 + 2]; // R
+				pixels[(y * width + x) * 4 + 1] = src_bits[((height - 1 - y) * width + x) * 4 + 1]; // G
+				pixels[(y * width + x) * 4 + 2] = src_bits[((height - 1 - y) * width + x) * 4 + 0]; // B
+				pixels[(y * width + x) * 4 + 3] = 255;
+			}
+		}
+		GlobalUnlock(hData);
+
+		if (rgba) free(rgba);
+		if (rgba2) { free(rgba2); rgba2 = nullptr; }
+
+		rgba = pixels;
+		w = width;
+		h = height;
+
+		push_history(rgba, w, h);
+
+		RECT rc = { 0, 0, w, h + button_height + text_height };
+		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
+		SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+		redraw();
+	}
+	CloseClipboard();
 }
 
-void trigger_generation()
+void generation()
 {
 	static sd_ctx_t* sd_ctx = nullptr;
 	using PFN_sd_cancel_generation = decltype(&sd_cancel_generation);
@@ -640,6 +884,8 @@ void trigger_generation()
 
 		if (mode == MODE_ASK)
 		{
+			// Use llama library for text generation:
+
 			wchar_t dll_dir[MAX_PATH] = {};
 			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/llama", originalWorkingDir);
 			SetDllDirectory(dll_dir);
@@ -699,6 +945,53 @@ void trigger_generation()
 			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
 			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
 
+			auto llama_callback = [](enum ggml_log_level level, const char* text, void* user_data) {
+				if (level >= GGML_LOG_LEVEL_ERROR)
+				{
+					progress_errors += text;
+				}
+				int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+				std::wstring wstr(cnt, 0);
+				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
+				OutputDebugString(wstr.c_str());
+			};
+			auto my_llama_progress_callback = [](float in_progress, void* user_data) {
+				progress = int(in_progress * 100);
+				redraw();
+				return true;
+			};
+			auto post_description = [](std::string result_text) {
+				// text can contain leading spaces and other stuff for some reason:
+				while (!result_text.empty() &&
+					(
+						result_text.front() == ' ' ||
+						result_text.front() == '\n' ||
+						result_text.front() == '-'
+						)
+					)
+				{
+					result_text.erase(result_text.begin());
+				}
+				// Text line endings should be Windows-like for textbox:
+				size_t pos = 0;
+				while ((pos = result_text.find('\n', pos)) != std::string::npos)
+				{
+					if (pos == 0 || result_text[pos - 1] != '\r')
+					{  // Avoid turning existing \r\n into \r\r\n
+						result_text.insert(pos, 1, '\r');
+						pos += 2;  // Skip past the \r\n we just inserted
+					}
+					else
+					{
+						++pos;
+					}
+				}
+				int cnt = MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, nullptr, 0);
+				std::wstring wstr(cnt, 0);
+				MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
+				SetWindowText(hEdit, wstr.c_str());
+			};
+
 			ggml_backend_load_all_from_path(u8_dll_dir);
 			llama_log_set(llama_callback, nullptr);
 
@@ -708,53 +1001,51 @@ void trigger_generation()
 			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
 			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
 
-			if (has_image)
+			llama_model_params model_params = llama_model_default_params();
+			model_params.n_gpu_layers = -1;
+			model_params.progress_callback = my_llama_progress_callback;
+
+			llama_context_params ctx_params = llama_context_default_params();
+			ctx_params.n_ctx = 8192;
+			ctx_params.n_batch = 512;
+
+			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
+			if (model != nullptr && !cancel_request.load())
 			{
-				// Use llama library for text generation from image:
-
-				wchar_t mmproj_path[MAX_PATH] = {};
-				char u8_mmproj_path[MAX_PATH] = {};
-				_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
-				WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
-				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
-
-				HMODULE mtmd = LoadLibrary(L"mtmd.dll");
-				if (mtmd == nullptr)
+				llama_context* ctx = llama_init_from_model(model, ctx_params);
+				if (ctx != nullptr && !cancel_request.load())
 				{
-					FreeLibrary(llama);
-					FreeLibrary(ggml);
-					MessageBox(window, L"mtmd.dll couldn't be loaded!", L"Error!", 0);
-					return;
-				}
-
-				LINK_DLL_FUNCTION(mtmd_context_params_default, mtmd);
-				LINK_DLL_FUNCTION(mtmd_init_from_file, mtmd);
-				LINK_DLL_FUNCTION(mtmd_bitmap_init, mtmd);
-				LINK_DLL_FUNCTION(mtmd_default_marker, mtmd);
-				LINK_DLL_FUNCTION(mtmd_input_chunks_init, mtmd);
-				LINK_DLL_FUNCTION(mtmd_tokenize, mtmd);
-				LINK_DLL_FUNCTION(mtmd_helper_eval_chunks, mtmd);
-				LINK_DLL_FUNCTION(mtmd_input_chunks_free, mtmd);
-				LINK_DLL_FUNCTION(mtmd_bitmap_free, mtmd);
-				LINK_DLL_FUNCTION(mtmd_free, mtmd);
-				LINK_DLL_FUNCTION(mtmd_log_set, mtmd);
-
-				mtmd_log_set(llama_callback, nullptr);
-
-				llama_model_params model_params = llama_model_default_params();
-				model_params.n_gpu_layers = -1;
-				model_params.progress_callback = my_llama_progress_callback;
-
-				llama_context_params ctx_params = llama_context_default_params();
-				ctx_params.n_ctx = 8192;
-				ctx_params.n_batch = 512;
-
-				llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
-				if (model != nullptr && !cancel_request.load())
-				{
-					llama_context* ctx = llama_init_from_model(model, ctx_params);
-					if (ctx != nullptr && !cancel_request.load())
+					if (has_image)
 					{
+						wchar_t mmproj_path[MAX_PATH] = {};
+						char u8_mmproj_path[MAX_PATH] = {};
+						_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
+						WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
+						EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
+
+						HMODULE mtmd = LoadLibrary(L"mtmd.dll");
+						if (mtmd == nullptr)
+						{
+							FreeLibrary(llama);
+							FreeLibrary(ggml);
+							MessageBox(window, L"mtmd.dll couldn't be loaded!", L"Error!", 0);
+							return;
+						}
+
+						LINK_DLL_FUNCTION(mtmd_context_params_default, mtmd);
+						LINK_DLL_FUNCTION(mtmd_init_from_file, mtmd);
+						LINK_DLL_FUNCTION(mtmd_bitmap_init, mtmd);
+						LINK_DLL_FUNCTION(mtmd_default_marker, mtmd);
+						LINK_DLL_FUNCTION(mtmd_input_chunks_init, mtmd);
+						LINK_DLL_FUNCTION(mtmd_tokenize, mtmd);
+						LINK_DLL_FUNCTION(mtmd_helper_eval_chunks, mtmd);
+						LINK_DLL_FUNCTION(mtmd_input_chunks_free, mtmd);
+						LINK_DLL_FUNCTION(mtmd_bitmap_free, mtmd);
+						LINK_DLL_FUNCTION(mtmd_free, mtmd);
+						LINK_DLL_FUNCTION(mtmd_log_set, mtmd);
+
+						mtmd_log_set(llama_callback, nullptr);
+
 						mtmd_context_params mtmd_params = mtmd_context_params_default();
 						mtmd_params.n_threads = 4;
 						mtmd_params.use_gpu = true;
@@ -776,7 +1067,7 @@ void trigger_generation()
 							}
 							mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
 
-							std::string llama_prompt = "<|im_start|>system\n";
+							std::string llama_prompt = std::string(mtmd_default_marker()) + "<|im_start|>system\n";
 							llama_prompt +=
 								"You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n"
 								"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
@@ -793,19 +1084,15 @@ void trigger_generation()
 							llama_prompt += "<|im_end|>\n";
 							llama_prompt += "<|im_start|>assistant\n";
 
-							const char* image_marker = mtmd_default_marker();
-							std::string full_text = std::string(image_marker) + llama_prompt;
-
 							mtmd_input_text input_text = {};
-							input_text.text = full_text.c_str();
-							input_text.text_len = full_text.length();
+							input_text.text = llama_prompt.c_str();
+							input_text.text_len = llama_prompt.length();
 							input_text.add_special = true;
 							input_text.parse_special = true;
 
 							mtmd_input_chunks* chunks = mtmd_input_chunks_init();
 
 							const mtmd_bitmap* bitmaps[1] = { bitmap };
-
 							if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) == 0)
 							{
 								llama_pos n_past = 0;
@@ -862,34 +1149,11 @@ void trigger_generation()
 							mtmd_bitmap_free(bitmap);
 						}
 						mtmd_free(ctx_mtmd);
+						FreeLibrary(mtmd);
 					}
-					llama_free(ctx);
-				}
-				final_errors = progress_errors;
-
-				llama_model_free(model);
-				llama_backend_free();
-
-				FreeLibrary(mtmd);
-			}
-			else
-			{
-				// Use llama library for text generation from user prompt but without image:
-
-				llama_model_params model_params = llama_model_default_params();
-				model_params.n_gpu_layers = -1;
-				model_params.progress_callback = my_llama_progress_callback;
-
-				llama_context_params ctx_params = llama_context_default_params();
-				ctx_params.n_ctx = 4096;
-				ctx_params.n_batch = 512;
-
-				llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
-				if (model != nullptr && !cancel_request.load())
-				{
-					llama_context* ctx = llama_init_from_model(model, ctx_params);
-					if (ctx != nullptr && !cancel_request.load())
+					else
 					{
+
 						std::string llama_prompt = "<|im_start|>system\n";
 						llama_prompt +=
 							"You are a helpful assistant, answer the user's questions or follow the orders.\n"
@@ -961,11 +1225,12 @@ void trigger_generation()
 						}
 					}
 				}
-				final_errors = progress_errors;
-
-				llama_model_free(model);
-				llama_backend_free();
+				llama_free(ctx);
 			}
+			final_errors = progress_errors;
+
+			llama_model_free(model);
+			llama_backend_free();
 
 			while (true)
 			{
@@ -1138,6 +1403,49 @@ void trigger_generation()
 				sd_params.backend = "cpu"; // fully runs on CPU (slow)
 			}
 			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
+
+			auto sd_log = [](enum sd_log_level_t level, const char* text, void* data) {
+				if (level == SD_LOG_DEBUG)
+					return;
+				if (level == SD_LOG_ERROR)
+				{
+					progress_errors += text;
+					InvalidateRect(window, NULL, TRUE);
+				}
+				int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+				std::wstring wstr(cnt, 0);
+				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
+				OutputDebugString(wstr.c_str());
+			};
+			auto sd_callback = [](int step, int steps, float time, void* data) {
+				progress = int(float(step) / float(steps) * 100);
+				redraw();
+			};
+			auto sd_preview = [](int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data) {
+				if (frame_count == 0)
+					return;
+				sd_image_t* image = &frames[frame_count - 1];
+				w = image->width;
+				h = image->height;
+				if (rgba)
+				{
+					free(rgba);
+					rgba = nullptr;
+				}
+				rgba = (unsigned char*)malloc(w * h * 4);
+				struct Color3 { unsigned char r, g, b; };
+				struct Color4 { unsigned char r, g, b, a; };
+				for (int i = 0; i < w * h; ++i)
+				{
+					const Color3& src = ((Color3*)image->data)[i];
+					Color4& dst = ((Color4*)rgba)[i];
+					dst.r = src.r;
+					dst.g = src.g;
+					dst.b = src.b;
+					dst.a = 255;
+				}
+				redraw();
+			};
 
 			sd_set_log_callback(sd_log, nullptr);
 			sd_set_progress_callback(sd_callback, nullptr);
@@ -1489,358 +1797,6 @@ void trigger_generation()
 	worker.detach();
 }
 
-void handle_load_image(HWND hWnd)
-{
-	wchar_t szFile[MAX_PATH] = {};
-	OPENFILENAMEW ofn = {};
-	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = hWnd;
-	ofn.lpstrFile = szFile;
-	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
-	ofn.lpstrFilter = L"Images\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files\0*.*\0";
-	ofn.nFilterIndex = 1;
-	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
-	if (GetOpenFileName(&ofn))
-	{
-		char filename[MAX_PATH] = {};
-		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
-
-		if (rgba)
-		{
-			free(rgba);
-			rgba = nullptr;
-		}
-		if (rgba2)
-		{
-			free(rgba2);
-			rgba2 = nullptr;
-		}
-		rgba = stbi_load(filename, &w, &h, &c, 4);
-
-		if (rgba)
-		{
-			push_history(rgba, w, h);
-			RECT rc = { 0, 0, w, h + button_height + text_height };
-			AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-			SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-			SetForegroundWindow(hWnd);
-			redraw();
-		}
-	}
-}
-void handle_save_image(HWND hWnd)
-{
-	if (!rgba2)
-	{
-		MessageBox(hWnd, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
-		return;
-	}
-
-	wchar_t szFile[MAX_PATH] = {};
-	OPENFILENAMEW ofn = {};
-	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = hWnd;
-	ofn.lpstrFile = szFile;
-	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
-
-	// Default: PNG (Index 1), Supported: ICO, JPG, BMP, TGA
-	ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0"
-		L"ICO Icon (*.ico)\0*.ico\0"
-		L"JPEG Image (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0"
-		L"BMP Image (*.bmp)\0*.bmp\0"
-		L"TGA Image (*.tga)\0*.tga\0";
-	ofn.nFilterIndex = 1;
-	ofn.lpstrDefExt = L"png";
-	ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-
-	if (GetSaveFileName(&ofn))
-	{
-		char filename[MAX_PATH] = {};
-		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
-
-		int width = w2;
-		int height = h2;
-		bool success = false;
-
-		std::string str_filename(filename);
-
-		auto check_extension = [](const std::string& str, const std::string& ext) {
-			return str.size() >= ext.size() && str.compare(str.size() - ext.size(), ext.size(), ext) == 0;
-		};
-
-		// 1. Multi-Resolution ICO
-		if (ofn.nFilterIndex == 2 || check_extension(str_filename, ".ico"))
-		{
-			const std::vector<int> targetSizes = { 256, 128, 64, 48, 32, 16 };
-
-			struct IconFrame {
-				int size;
-				int png_len;
-				unsigned char* png_bytes;
-			};
-
-			std::vector<IconFrame> frames;
-
-			for (int size : targetSizes)
-			{
-				if (size > width && size > height && size != 256) continue;
-
-				const unsigned char* srcPtr = rgba2;
-				std::vector<unsigned char> resized_buffer;
-
-				if (width != size || height != size)
-				{
-					resized_buffer.resize(size * size * 4);
-					stbir_resize_uint8_srgb(
-						rgba2, width, height, width * 4,
-						resized_buffer.data(), size, size, size * 4,
-						STBIR_RGBA
-					);
-					srcPtr = resized_buffer.data();
-				}
-
-				int png_len = 0;
-				unsigned char* png_bytes = stbi_write_png_to_mem(srcPtr, size * 4, size, size, 4, &png_len);
-				if (png_bytes)
-				{
-					frames.push_back({ size, png_len, png_bytes });
-				}
-			}
-
-			if (!frames.empty())
-			{
-#pragma pack(push, 1)
-				struct ICOHeader {
-					uint16_t idReserved = 0;
-					uint16_t idType = 1; // 1 = ICO
-					uint16_t idCount;
-				};
-
-				struct ICONDIRENTRY {
-					uint8_t  bWidth;
-					uint8_t  bHeight;
-					uint8_t  bColorCount = 0;
-					uint8_t  bReserved = 0;
-					uint16_t wPlanes = 1;
-					uint16_t wBitCount = 32;
-					uint32_t dwBytesInRes;
-					uint32_t dwImageOffset;
-				};
-#pragma pack(pop)
-
-				ICOHeader header;
-				header.idCount = static_cast<uint16_t>(frames.size());
-
-				uint32_t currentOffset = sizeof(ICOHeader) + static_cast<uint32_t>(frames.size() * sizeof(ICONDIRENTRY));
-
-				std::vector<ICONDIRENTRY> entries;
-				for (const auto& frame : frames)
-				{
-					ICONDIRENTRY entry;
-					entry.bWidth = (frame.size >= 256) ? 0 : static_cast<uint8_t>(frame.size);
-					entry.bHeight = (frame.size >= 256) ? 0 : static_cast<uint8_t>(frame.size);
-					entry.dwBytesInRes = static_cast<uint32_t>(frame.png_len);
-					entry.dwImageOffset = currentOffset;
-
-					entries.push_back(entry);
-					currentOffset += frame.png_len;
-				}
-
-				std::ofstream file(filename, std::ios::binary);
-				if (file.is_open())
-				{
-					file.write(reinterpret_cast<const char*>(&header), sizeof(header));
-					file.write(reinterpret_cast<const char*>(entries.data()), entries.size() * sizeof(ICONDIRENTRY));
-
-					for (auto& frame : frames)
-					{
-						file.write(reinterpret_cast<const char*>(frame.png_bytes), frame.png_len);
-					}
-
-					success = file.good();
-					file.close();
-				}
-
-				for (auto& frame : frames)
-				{
-					STBIW_FREE(frame.png_bytes);
-				}
-			}
-		}
-		else if (ofn.nFilterIndex == 3 || check_extension(str_filename, ".jpg") || check_extension(str_filename, ".jpeg"))
-		{
-			success = stbi_write_jpg(filename, width, height, 4, rgba2, 90) != 0;
-		}
-		else if (ofn.nFilterIndex == 4 || check_extension(str_filename, ".bmp"))
-		{
-			success = stbi_write_bmp(filename, width, height, 4, rgba2) != 0;
-		}
-		else if (ofn.nFilterIndex == 5 || check_extension(str_filename, ".tga"))
-		{
-			success = stbi_write_tga(filename, width, height, 4, rgba2) != 0;
-		}
-		else
-		{
-			success = stbi_write_png(filename, width, height, 4, rgba2, width * 4) != 0;
-		}
-
-		if (!success)
-		{
-			MessageBox(hWnd, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
-		}
-	}
-}
-
-void handle_copy_image(HWND hWnd)
-{
-	int draw_height = h2;
-	if (!rgba2 || w2 <= 0 || draw_height <= 0)
-	{
-		MessageBox(hWnd, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
-		return;
-	}
-
-	size_t row_stride = w2 * 4;
-	size_t image_size = row_stride * draw_height;
-	size_t total_size = sizeof(BITMAPINFOHEADER) + image_size;
-
-	HGLOBAL hClipboardData = GlobalAlloc(GMEM_MOVEABLE, total_size);
-	if (!hClipboardData) return;
-
-	void* pData = GlobalLock(hClipboardData);
-	if (pData)
-	{
-		// Write standard DIB header chunk
-		BITMAPINFOHEADER* pHeader = (BITMAPINFOHEADER*)pData;
-		pHeader->biSize = sizeof(BITMAPINFOHEADER);
-		pHeader->biWidth = w2;
-		pHeader->biHeight = draw_height; // Positive = bottom-up DIB layout requirements
-		pHeader->biPlanes = 1;
-		pHeader->biBitCount = 32;
-		pHeader->biCompression = BI_RGB;
-		pHeader->biSizeImage = (DWORD)image_size;
-
-		// Clipboard DIB stores pixels bottom-to-top, flip vertical rows directly into memory block
-		unsigned char* pDestPixels = (unsigned char*)pData + sizeof(BITMAPINFOHEADER);
-		for (int y = 0; y < draw_height; ++y)
-		{
-			unsigned char* src_row = rgba2 + ((draw_height - 1 - y) * row_stride);
-			unsigned char* dst_row = pDestPixels + (y * row_stride);
-
-			// Reorder raw storage layer RGBA -> Clipboard BGRA channel alignment configurations
-			for (int x = 0; x < w2; ++x)
-			{
-				dst_row[x * 4 + 0] = src_row[x * 4 + 2]; // B
-				dst_row[x * 4 + 1] = src_row[x * 4 + 1]; // G
-				dst_row[x * 4 + 2] = src_row[x * 4 + 0]; // R
-				dst_row[x * 4 + 3] = src_row[x * 4 + 3]; // A
-			}
-		}
-		GlobalUnlock(hClipboardData);
-
-		if (OpenClipboard(hWnd))
-		{
-			EmptyClipboard();
-			SetClipboardData(CF_DIB, hClipboardData);
-			CloseClipboard();
-		}
-		else
-		{
-			GlobalFree(hClipboardData);
-		}
-	}
-}
-
-void handle_paste_image(HWND hWnd)
-{
-	if (!OpenClipboard(hWnd)) return;
-
-	if (IsClipboardFormatAvailable(CF_HDROP))
-	{
-		HANDLE hDrop = GetClipboardData(CF_HDROP);
-		if (hDrop)
-		{
-			wchar_t wfilename[MAX_PATH] = {};
-			if (DragQueryFile((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
-			{
-				CloseClipboard();
-
-				char filename[MAX_PATH] = {};
-				WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
-
-				int new_w, new_h, new_c;
-				unsigned char* new_rgba = stbi_load(filename, &new_w, &new_h, &new_c, 4);
-
-				if (new_rgba)
-				{
-					if (rgba) free(rgba);
-					if (rgba2) { free(rgba2); rgba2 = nullptr; }
-
-					rgba = new_rgba;
-					w = new_w;
-					h = new_h;
-
-					push_history(rgba, w, h);
-
-					RECT rc = { 0, 0, w, h + button_height + text_height };
-					AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-					SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-					redraw();
-				}
-				return;
-			}
-		}
-	}
-
-	HANDLE hData = GetClipboardData(CF_DIB);
-	if (!hData)
-	{
-		CloseClipboard();
-		return;
-	}
-
-	BITMAPINFO* pbi = (BITMAPINFO*)GlobalLock(hData);
-	if (pbi)
-	{
-		int width = pbi->bmiHeader.biWidth;
-		int height = abs(pbi->bmiHeader.biHeight);
-
-		// Ensure RGBA format
-		unsigned char* pixels = (unsigned char*)malloc(width * height * 4);
-
-		// Simplified extraction (assumes 32-bit DIB)
-		unsigned char* src_bits = (unsigned char*)pbi + pbi->bmiHeader.biSize;
-		for (int y = 0; y < height; y++)
-		{
-			for (int x = 0; x < width; x++)
-			{
-				// Clipboard DIB is BGRA
-				pixels[(y * width + x) * 4 + 0] = src_bits[((height - 1 - y) * width + x) * 4 + 2]; // R
-				pixels[(y * width + x) * 4 + 1] = src_bits[((height - 1 - y) * width + x) * 4 + 1]; // G
-				pixels[(y * width + x) * 4 + 2] = src_bits[((height - 1 - y) * width + x) * 4 + 0]; // B
-				pixels[(y * width + x) * 4 + 3] = 255;
-			}
-		}
-		GlobalUnlock(hData);
-
-		if (rgba) free(rgba);
-		if (rgba2) { free(rgba2); rgba2 = nullptr; }
-
-		rgba = pixels;
-		w = width;
-		h = height;
-
-		push_history(rgba, w, h);
-
-		RECT rc = { 0, 0, w, h + button_height + text_height };
-		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE), GetMenu(hWnd) != NULL);
-		SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
-		redraw();
-	}
-	CloseClipboard();
-}
-
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
 	_wgetcwd(originalWorkingDir, MAX_PATH); // save original working dir at startup
@@ -2034,14 +1990,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					{
 					case IDC_LOAD_BUTTON:
 					case ID_ACCEL_LOAD:
-						handle_load_image(hWnd);
+						load_image(hWnd);
 						break;
 					case IDC_SAVE_BUTTON:
 					case ID_ACCEL_SAVE:
-						handle_save_image(hWnd);
+						save_image(hWnd);
 						break;
 					case IDC_COPY_BUTTON:
-						handle_copy_image(hWnd);
+						copy_image(hWnd);
 						break; 
 					case IDC_CLEAR_BUTTON:
 						if (rgba) { free(rgba); rgba = nullptr; }
@@ -2051,13 +2007,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						break;
 					case IDC_GENERATE_BUTTON:
 					case ID_ACCEL_GENERATE:
-						trigger_generation();
+						generation();
 						break; 
 					case IDC_UNDO_BUTTON:
-						handle_undo();
+						undo();
 						break;
 					case IDC_REDO_BUTTON:
-						handle_redo();
+						redo();
 						break;
 					}
 				}
@@ -2068,15 +2024,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			{
 				if (wParam == 'V')
 				{
-					if (GetFocus() != hEdit) handle_paste_image(hWnd);
+					if (GetFocus() != hEdit) paste_image(hWnd);
 				}
 				else if (wParam == 'Z')
 				{
-					if (GetFocus() != hEdit) handle_undo();
+					if (GetFocus() != hEdit) undo();
 				}
 				else if (wParam == 'Y')
 				{
-					if (GetFocus() != hEdit) handle_redo();
+					if (GetFocus() != hEdit) redo();
 				}
 			}
 			break;
@@ -2149,10 +2105,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						redraw();
 					}
 					else if (selection == 1100) { // Copy
-						handle_copy_image(hWnd);
+						copy_image(hWnd);
 					}
 					else if (selection == 1101) { // Paste
-						handle_paste_image(hWnd);
+						paste_image(hWnd);
 					}
 					else if (selection == 1102) { // CPU
 						is_cpu = !is_cpu;
