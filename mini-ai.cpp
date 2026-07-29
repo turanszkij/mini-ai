@@ -367,12 +367,12 @@ void redo()
 	}
 	update_undo_redo_states();
 }
-void load_image(HWND hWnd)
+void load_image()
 {
 	wchar_t szFile[MAX_PATH] = {};
 	OPENFILENAMEW ofn = {};
 	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = hWnd;
+	ofn.hwndOwner = window;
 	ofn.lpstrFile = szFile;
 	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
 	ofn.lpstrFilter = L"Images\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files\0*.*\0";
@@ -399,24 +399,24 @@ void load_image(HWND hWnd)
 		if (rgba)
 		{
 			push_history(rgba, w, h);
-			SetForegroundWindow(hWnd);
+			SetForegroundWindow(window);
 			resize_window_to_image();
 			redraw();
 		}
 	}
 }
-void save_image(HWND hWnd)
+void save_image()
 {
 	if (!rgba2)
 	{
-		MessageBox(hWnd, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
+		MessageBox(window, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
 		return;
 	}
 
 	wchar_t szFile[MAX_PATH] = {};
 	OPENFILENAMEW ofn = {};
 	ofn.lStructSize = sizeof(ofn);
-	ofn.hwndOwner = hWnd;
+	ofn.hwndOwner = window;
 	ofn.lpstrFile = szFile;
 	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
 
@@ -441,9 +441,9 @@ void save_image(HWND hWnd)
 
 		std::string str_filename(filename);
 
-		auto check_extension = [](const std::string& str, const std::string& ext) {
+		static auto check_extension = [](const std::string& str, const std::string& ext) {
 			return str.size() >= ext.size() && str.compare(str.size() - ext.size(), ext.size(), ext) == 0;
-			};
+		};
 
 		// 1. Multi-Resolution ICO
 		if (ofn.nFilterIndex == 2 || check_extension(str_filename, ".ico"))
@@ -468,11 +468,7 @@ void save_image(HWND hWnd)
 				if (width != size || height != size)
 				{
 					resized_buffer.resize(size * size * 4);
-					stbir_resize_uint8_srgb(
-						rgba2, width, height, width * 4,
-						resized_buffer.data(), size, size, size * 4,
-						STBIR_RGBA
-					);
+					stbir_resize_uint8_srgb(rgba2, width, height, width * 4, resized_buffer.data(), size, size, size * 4, STBIR_RGBA);
 					srcPtr = resized_buffer.data();
 				}
 
@@ -563,16 +559,16 @@ void save_image(HWND hWnd)
 
 		if (!success)
 		{
-			MessageBox(hWnd, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
+			MessageBox(window, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
 		}
 	}
 }
-void copy_image(HWND hWnd)
+void copy_image()
 {
 	int draw_height = h2;
 	if (!rgba2 || w2 <= 0 || draw_height <= 0)
 	{
-		MessageBox(hWnd, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
+		MessageBox(window, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
 		return;
 	}
 
@@ -614,7 +610,7 @@ void copy_image(HWND hWnd)
 		}
 		GlobalUnlock(hClipboardData);
 
-		if (OpenClipboard(hWnd))
+		if (OpenClipboard(window))
 		{
 			EmptyClipboard();
 			SetClipboardData(CF_DIB, hClipboardData);
@@ -626,9 +622,9 @@ void copy_image(HWND hWnd)
 		}
 	}
 }
-void paste_image(HWND hWnd, bool is_reference = false)
+void paste_image(bool is_reference = false)
 {
-	if (!OpenClipboard(hWnd)) return;
+	if (!OpenClipboard(window)) return;
 
 	if (IsClipboardFormatAvailable(CF_HDROP))
 	{
@@ -683,7 +679,7 @@ void paste_image(HWND hWnd, bool is_reference = false)
 	}
 
 	BITMAPINFO* pbi = (BITMAPINFO*)GlobalLock(hData);
-	if (pbi)
+	if (pbi && pbi->bmiHeader.biBitCount == 32)
 	{
 		int width = pbi->bmiHeader.biWidth;
 		int height = abs(pbi->bmiHeader.biHeight);
@@ -729,26 +725,6 @@ void paste_image(HWND hWnd, bool is_reference = false)
 		redraw();
 	}
 	CloseClipboard();
-}
-
-void rgb2rgba(const uint8_t* srcRGB, uint8_t* dstRGBA, int width, int height)
-{
-	for (int i = 0; i < width * height; ++i)
-	{
-		dstRGBA[i * 4 + 0] = srcRGB[i * 3 + 0];
-		dstRGBA[i * 4 + 1] = srcRGB[i * 3 + 1];
-		dstRGBA[i * 4 + 2] = srcRGB[i * 3 + 2];
-		dstRGBA[i * 4 + 3] = 255;
-	}
-}
-void rgba2rgb(const uint8_t* srcRGBA, uint8_t* dstRGB, int width, int height)
-{
-	for (int i = 0; i < width * height; ++i)
-	{
-		dstRGB[i * 3 + 0] = srcRGBA[i * 4 + 0];
-		dstRGB[i * 3 + 1] = srcRGBA[i * 4 + 1];
-		dstRGB[i * 3 + 2] = srcRGBA[i * 4 + 2];
-	}
 }
 
 void generation()
@@ -803,7 +779,7 @@ void generation()
 			seedfile.close();
 		}
 
-		auto EnsureModelExists = [](const wchar_t* url, const wchar_t* fileName) {
+		static auto EnsureModelExists = [](const wchar_t* url, const wchar_t* fileName) {
 			if (std::filesystem::exists(fileName))
 				return;
 			current_download = fileName;
@@ -890,6 +866,24 @@ void generation()
 			InvalidateRect(window, NULL, TRUE);
 		};
 
+		static auto rgb2rgba = [](const uint8_t* srcRGB, uint8_t* dstRGBA, int width, int height) {
+			for (int i = 0; i < width * height; ++i)
+			{
+				dstRGBA[i * 4 + 0] = srcRGB[i * 3 + 0];
+				dstRGBA[i * 4 + 1] = srcRGB[i * 3 + 1];
+				dstRGBA[i * 4 + 2] = srcRGB[i * 3 + 2];
+				dstRGBA[i * 4 + 3] = 255;
+			}
+		};
+		static auto rgba2rgb = [](const uint8_t* srcRGBA, uint8_t* dstRGB, int width, int height) {
+			for (int i = 0; i < width * height; ++i)
+			{
+				dstRGB[i * 3 + 0] = srcRGBA[i * 4 + 0];
+				dstRGB[i * 3 + 1] = srcRGBA[i * 4 + 1];
+				dstRGB[i * 3 + 2] = srcRGBA[i * 4 + 2];
+			}
+		};
+
 		if (mode == MODE::ASK)
 		{
 			// Use llama library for text generation:
@@ -953,7 +947,7 @@ void generation()
 			LINK_DLL_FUNCTION(ggml_backend_reg_count, ggml);
 			LINK_DLL_FUNCTION(ggml_backend_reg_get, ggml);
 
-			auto llama_callback = [](enum ggml_log_level level, const char* text, void* user_data) {
+			static auto llama_callback = [](enum ggml_log_level level, const char* text, void* user_data) {
 				if (level >= GGML_LOG_LEVEL_ERROR)
 				{
 					progress_errors += text;
@@ -962,13 +956,13 @@ void generation()
 				std::wstring wstr(cnt, 0);
 				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
 				OutputDebugString(wstr.c_str());
-				};
-			auto my_llama_progress_callback = [](float in_progress, void* user_data) {
+			};
+			static auto my_llama_progress_callback = [](float in_progress, void* user_data) {
 				progress = int(in_progress * 100);
 				redraw();
 				return true;
-				};
-			auto post_description = [](std::string result_text) {
+			};
+			static auto post_description = [](std::string result_text) {
 				// text can contain leading spaces and other stuff for some reason:
 				while (!result_text.empty() &&
 					(
@@ -998,7 +992,7 @@ void generation()
 				std::wstring wstr(cnt, 0);
 				MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
 				SetWindowText(hEdit, wstr.c_str());
-				};
+			};
 
 			ggml_backend_load_all_from_path(u8_dll_dir);
 			llama_log_set(llama_callback, nullptr);
@@ -1418,7 +1412,7 @@ void generation()
 			}
 			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
 
-			auto sd_log = [](enum sd_log_level_t level, const char* text, void* data) {
+			static auto sd_log = [](enum sd_log_level_t level, const char* text, void* data) {
 				if (level == SD_LOG_DEBUG)
 					return;
 				if (level == SD_LOG_ERROR)
@@ -1431,11 +1425,11 @@ void generation()
 				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
 				OutputDebugString(wstr.c_str());
 			};
-			auto sd_callback = [](int step, int steps, float time, void* data) {
+			static auto sd_callback = [](int step, int steps, float time, void* data) {
 				progress = int(float(step) / float(steps) * 100);
 				redraw();
 			};
-			auto sd_preview = [](int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data) {
+			static auto sd_preview = [](int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data) {
 				if (frame_count == 0)
 					return;
 				sd_image_t* image = &frames[frame_count - 1];
@@ -2080,14 +2074,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 				case IDC_LOAD_BUTTON:
 				case ID_ACCEL_LOAD:
-					load_image(hWnd);
+					load_image();
 					break;
 				case IDC_SAVE_BUTTON:
 				case ID_ACCEL_SAVE:
-					save_image(hWnd);
+					save_image();
 					break;
 				case IDC_COPY_BUTTON:
-					copy_image(hWnd);
+					copy_image();
 					break;
 				case IDC_CLEAR_BUTTON:
 					if (rgba) { free(rgba); rgba = nullptr; }
@@ -2115,7 +2109,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			{
 				if (wParam == 'V')
 				{
-					if (GetFocus() != hEdit) paste_image(hWnd);
+					if (GetFocus() != hEdit) paste_image();
 				}
 				else if (wParam == 'Z')
 				{
@@ -2208,13 +2202,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					redraw();
 				}
 				else if (selection == 1100) { // Copy
-					copy_image(hWnd);
+					copy_image();
 				}
 				else if (selection == 1101) { // Paste
-					paste_image(hWnd);
+					paste_image();
 				}
 				else if (selection == 1102) { // Paste as reference
-					paste_image(hWnd, true);
+					paste_image(true);
 				}
 				else if (selection == 1103) { // CPU
 					is_cpu = !is_cpu;
@@ -2254,7 +2248,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				else if (selection >= 2000) // resolution scale selection
 				{
 					selection -= 2000;
-					if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
+					if (selection >= 0 && selection < ARRAYSIZE(scale_presets))
 					{
 						const float scale = float(scale_presets[selection]) / 100.0f;
 						w2 = int(w * scale);
