@@ -2169,7 +2169,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				AppendMenu(hMenu, MF_STRING, 1099, L"New image");
 				AppendMenu(hMenu, MF_STRING, 1100, L"Copy (Ctrl + C)");
 				AppendMenu(hMenu, MF_STRING, 1101, L"Paste (Ctrl + V)");
-				AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
+				if (get_ref_container_height() > 0)
+				{
+					AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
+				}
 				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
 
 				HMENU hImageModelMenu = CreatePopupMenu();
@@ -2383,10 +2386,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
 			{
 				HMENU hMenu = CreatePopupMenu();
-				AppendMenu(hMenu, MF_STRING | (mode == MODE::IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate New Image");
-				AppendMenu(hMenu, MF_STRING | (mode == MODE::IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE::IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate image");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE::IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit image");
 				AppendMenu(hMenu, MF_STRING | (mode == MODE::ASK ? MF_CHECKED : 0), 103, L"Ask anything");
-				AppendMenu(hMenu, MF_STRING | (mode == MODE::VIDEO ? MF_CHECKED : 0), 104, L"Generate Video");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE::VIDEO ? MF_CHECKED : 0), 104, L"Generate video");
 
 				RECT rc;
 				GetWindowRect(hBtnGenerate, &rc);
