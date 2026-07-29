@@ -1,4 +1,4 @@
-#include <Windows.h>
+﻿#include <Windows.h>
 #include <commdlg.h> // Common Dialogs for Load/Save
 
 #include <dwmapi.h> // DwmSetWindowAttribute
