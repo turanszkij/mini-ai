@@ -11,8 +11,8 @@
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
 
-#include <wininet.h>
-#pragma comment(lib, "wininet.lib")
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
 
 #include <wrl/client.h>
 #include <mfapi.h>
@@ -179,6 +179,7 @@ struct HistoryEntry
 };
 static std::vector<HistoryEntry> history;
 static int history_index = -1;
+static const int max_history_count = 100;
 
 void resize_window_to_image()
 {
@@ -265,7 +266,6 @@ void update_undo_redo_states()
 void push_history(unsigned char* raw_rgba, int width, int height, bool save_output = false)
 {
 	int out_size = 0;
-	// Compress to PNG in memory
 	unsigned char* png_data = nullptr;
 
 	if (raw_rgba != nullptr)
@@ -273,7 +273,6 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 		png_data = stbi_write_png_to_mem(raw_rgba, width * 4, width, height, 4, &out_size);
 	}
 
-	// If we undo'd and then generate/load a new image, clear the "redo" future
 	while (history.size() > (size_t)(history_index + 1))
 	{
 		if (history.back().data != nullptr)
@@ -281,8 +280,7 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 		history.pop_back();
 	}
 
-	// Cap history size (e.g., 10 images)
-	if (history.size() >= 10)
+	if (history.size() >= max_history_count)
 	{
 		if (history[0].data != nullptr)
 			free(history[0].data);
@@ -290,7 +288,6 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 		history_index--;
 	}
 
-	// Last empty history is completely replaced
 	if (history.size() > 0 && history.back().data == nullptr)
 	{
 		history.pop_back();
@@ -306,6 +303,7 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 
 	if (save_output && png_data != nullptr)
 	{
+		// In this case it's also saved to output/ folder as real png file
 		wchar_t output_path[MAX_PATH] = {};
 		_snwprintf(output_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/output");
 		CreateDirectory(output_path, 0);
@@ -703,7 +701,7 @@ void paste_image(HWND hWnd, bool is_reference = false)
 				pixels[(y * width + x) * 4 + 0] = src_bits[((height - 1 - y) * width + x) * 4 + 2]; // R
 				pixels[(y * width + x) * 4 + 1] = src_bits[((height - 1 - y) * width + x) * 4 + 1]; // G
 				pixels[(y * width + x) * 4 + 2] = src_bits[((height - 1 - y) * width + x) * 4 + 0]; // B
-				pixels[(y * width + x) * 4 + 3] = 255;
+				pixels[(y * width + x) * 4 + 3] = src_bits[((height - 1 - y) * width + x) * 4 + 3]; // A
 			}
 		}
 		GlobalUnlock(hData);
@@ -731,6 +729,26 @@ void paste_image(HWND hWnd, bool is_reference = false)
 		redraw();
 	}
 	CloseClipboard();
+}
+
+void rgb2rgba(const uint8_t* srcRGB, uint8_t* dstRGBA, int width, int height)
+{
+	for (int i = 0; i < width * height; ++i)
+	{
+		dstRGBA[i * 4 + 0] = srcRGB[i * 3 + 0];
+		dstRGBA[i * 4 + 1] = srcRGB[i * 3 + 1];
+		dstRGBA[i * 4 + 2] = srcRGB[i * 3 + 2];
+		dstRGBA[i * 4 + 3] = 255;
+	}
+}
+void rgba2rgb(const uint8_t* srcRGBA, uint8_t* dstRGB, int width, int height)
+{
+	for (int i = 0; i < width * height; ++i)
+	{
+		dstRGB[i * 3 + 0] = srcRGBA[i * 4 + 0];
+		dstRGB[i * 3 + 1] = srcRGBA[i * 4 + 1];
+		dstRGB[i * 3 + 2] = srcRGBA[i * 4 + 2];
+	}
 }
 
 void generation()
@@ -788,60 +806,77 @@ void generation()
 		auto EnsureModelExists = [](const wchar_t* url, const wchar_t* fileName) {
 			if (std::filesystem::exists(fileName))
 				return;
-
-			std::wstring tempFileName = std::wstring(fileName) + L".tmp";
-
 			current_download = fileName;
-
-			size_t found;
-			found = current_download.find_last_of(L"/\\");
+			size_t found = current_download.find_last_of(L"/\\");
 			current_download = current_download.substr(found + 1);
-
+			wchar_t tempFileName[MAX_PATH] = {};
+			_snwprintf(tempFileName, MAX_PATH, L"%s.tmp", fileName);
 			InvalidateRect(window, NULL, TRUE);
 
-			HINTERNET hInternet = InternetOpen(L"MiniAI", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-			HINTERNET hUrl = InternetOpenUrl(hInternet, url, NULL, 0, INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE, 0);
+			URL_COMPONENTS uc = {};
+			uc.dwStructSize = sizeof(uc);
+			wchar_t host[256]{}, path[1024]{};
+			uc.lpszHostName = host;
+			uc.dwHostNameLength = _countof(host);
+			uc.lpszUrlPath = path;
+			uc.dwUrlPathLength = _countof(path);
 
 			bool success = false;
-			if (hUrl)
+			if (WinHttpCrackUrl(url, 0, 0, &uc))
 			{
-				DWORD dwSize = 0;
-				DWORD dwHeaderSize = sizeof(dwSize);
-				HttpQueryInfo(hUrl, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &dwSize, &dwHeaderSize, NULL);
+				HINTERNET hSession = WinHttpOpen(L"MiniAI", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 
-				std::ofstream outFile(tempFileName, std::ios::binary);
-				std::vector<char> buffer(1024 * 1024);
-				DWORD bytesRead = 0;
-				DWORD totalRead = 0;
-				int last_progress = -1;
-
-				while (InternetReadFile(hUrl, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
+				if (hSession)
 				{
-					outFile.write(buffer.data(), bytesRead);
-					totalRead += bytesRead;
-
-					if (dwSize > 0)
+					HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
+					if (hConnect)
 					{
-						int current_progress = (int)((double)totalRead / (double)dwSize * 100);
-						if (current_progress != last_progress)
+						DWORD flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+						HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+
+						if (hRequest && WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,  WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(hRequest, NULL))
 						{
-							progress = current_progress;
-							last_progress = current_progress;
-							InvalidateRect(window, NULL, FALSE);
+							UINT64 dwSize = 0;
+							DWORD dwHeaderSize = sizeof(dwSize);
+							WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &dwSize, &dwHeaderSize, WINHTTP_NO_HEADER_INDEX);
+
+							std::ofstream outFile(tempFileName, std::ios::binary);
+							std::vector<char> buffer(4 * 1024 * 1024);
+							DWORD bytesRead = 0;
+							DWORD totalRead = 0;
+							int last_progress = -1;
+
+							while (WinHttpReadData(hRequest, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
+							{
+								outFile.write(buffer.data(), bytesRead);
+								totalRead += bytesRead;
+
+								if (dwSize > 0)
+								{
+									int current_progress = (int)((double)totalRead / (double)dwSize * 100);
+									if (current_progress != last_progress)
+									{
+										progress = current_progress;
+										last_progress = current_progress;
+										InvalidateRect(window, NULL, FALSE);
+									}
+								}
+							}
+							outFile.close();
+							success = (bytesRead == 0);
 						}
+						else
+						{
+							MessageBox(window, L"Could not connect to URL", L"Download Error", MB_OK | MB_ICONERROR);
+						}
+
+						if (hRequest) 
+							WinHttpCloseHandle(hRequest);
+						WinHttpCloseHandle(hConnect);
 					}
+					WinHttpCloseHandle(hSession);
 				}
-				outFile.close();
-				InternetCloseHandle(hUrl);
-
-				success = (bytesRead == 0);
 			}
-			else
-			{
-				MessageBox(window, L"Could not connect to URL", L"Download Error", MB_OK | MB_ICONERROR);
-			}
-
-			InternetCloseHandle(hInternet);
 
 			if (success) {
 				std::filesystem::rename(tempFileName, fileName);
@@ -853,7 +888,7 @@ void generation()
 			current_download.clear();
 			progress = 0;
 			InvalidateRect(window, NULL, TRUE);
-			};
+		};
 
 		if (mode == MODE::ASK)
 		{
@@ -1033,11 +1068,7 @@ void generation()
 							std::vector<uint8_t> rgb_data(w * h * 3);
 							if (rgba)
 							{
-								for (int i = 0; i < w * h; ++i) {
-									rgb_data[i * 3 + 0] = rgba[i * 4 + 0];
-									rgb_data[i * 3 + 1] = rgba[i * 4 + 1];
-									rgb_data[i * 3 + 2] = rgba[i * 4 + 2];
-								}
+								rgba2rgb(rgba, rgb_data.data(), w, h);
 							}
 							mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
 
@@ -1399,11 +1430,11 @@ void generation()
 				std::wstring wstr(cnt, 0);
 				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
 				OutputDebugString(wstr.c_str());
-				};
+			};
 			auto sd_callback = [](int step, int steps, float time, void* data) {
 				progress = int(float(step) / float(steps) * 100);
 				redraw();
-				};
+			};
 			auto sd_preview = [](int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data) {
 				if (frame_count == 0)
 					return;
@@ -1416,19 +1447,9 @@ void generation()
 					rgba = nullptr;
 				}
 				rgba = (unsigned char*)malloc(w * h * 4);
-				struct Color3 { unsigned char r, g, b; };
-				struct Color4 { unsigned char r, g, b, a; };
-				for (int i = 0; i < w * h; ++i)
-				{
-					const Color3& src = ((Color3*)image->data)[i];
-					Color4& dst = ((Color4*)rgba)[i];
-					dst.r = src.r;
-					dst.g = src.g;
-					dst.b = src.b;
-					dst.a = 255;
-				}
+				rgb2rgba(image->data, rgba, w, h);
 				redraw();
-				};
+			};
 
 			sd_set_log_callback(sd_log, nullptr);
 			sd_set_progress_callback(sd_callback, nullptr);
@@ -1473,12 +1494,7 @@ void generation()
 						ref_img.height = h2;
 						ref_img.channel = 3;
 						ref_img.data = (uint8_t*)malloc(w2 * h2 * 3);
-						for (int i = 0; i < w2 * h2; ++i)
-						{
-							ref_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
-							ref_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
-							ref_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
-						}
+						rgba2rgb(rgba2, ref_img.data, w2, h2);
 					}
 					else if (rgba != nullptr)
 					{
@@ -1486,12 +1502,7 @@ void generation()
 						ref_img.height = h;
 						ref_img.channel = 3;
 						ref_img.data = (uint8_t*)malloc(w * h * 3);
-						for (int i = 0; i < w * h; ++i)
-						{
-							ref_img.data[i * 3 + 0] = rgba[i * 4 + 0];
-							ref_img.data[i * 3 + 1] = rgba[i * 4 + 1];
-							ref_img.data[i * 3 + 2] = rgba[i * 4 + 2];
-						}
+						rgba2rgb(rgba, ref_img.data, w, h);
 					}
 					if (ref_img.data != nullptr && (ref_img.width != vid_params.width || ref_img.height != vid_params.height))
 					{
@@ -1515,12 +1526,7 @@ void generation()
 							sdimg.height = rimg.h;
 							sdimg.channel = 3;
 							sdimg.data = (uint8_t*)malloc(rimg.w * rimg.h * 3);
-							for (int i = 0; i < rimg.w * rimg.h; ++i)
-							{
-								sdimg.data[i * 3 + 0] = rimg.rgba[i * 4 + 0];
-								sdimg.data[i * 3 + 1] = rimg.rgba[i * 4 + 1];
-								sdimg.data[i * 3 + 2] = rimg.rgba[i * 4 + 2];
-							}
+							rgba2rgb(rimg.rgba, sdimg.data, rimg.w, rimg.h);
 							sd_reference_images.push_back(sdimg);
 						}
 					}
@@ -1553,17 +1559,7 @@ void generation()
 								rgba = nullptr;
 							}
 							rgba = (unsigned char*)malloc(w * h * 4);
-							struct Color3 { unsigned char r, g, b; };
-							struct Color4 { unsigned char r, g, b, a; };
-							for (int i = 0; i < w * h; ++i)
-							{
-								const Color3& src = ((Color3*)image->data)[i];
-								Color4& dst = ((Color4*)rgba)[i];
-								dst.r = src.r;
-								dst.g = src.g;
-								dst.b = src.b;
-								dst.a = 255;
-							}
+							rgb2rgba(image->data, rgba, w, h);
 							push_history(rgba, w, h);
 						}
 
@@ -1682,8 +1678,8 @@ void generation()
 				{
 					sd_img_gen_params_t img_params;
 					sd_img_gen_params_init(&img_params);
-					img_params.width = (w2 / 64) * 64;
-					img_params.height = (h2 / 64) * 64;
+					img_params.width = (w2 / 16) * 16;
+					img_params.height = (h2 / 16) * 16;
 					img_params.seed = seed;
 					img_params.prompt = prompt.c_str();
 					img_params.strength = 1.0f;
@@ -1725,12 +1721,7 @@ void generation()
 							ref_img.height = h2;
 							ref_img.channel = 3;
 							ref_img.data = (uint8_t*)malloc(w2 * h2 * 3);
-							for (int i = 0; i < w2 * h2; ++i)
-							{
-								ref_img.data[i * 3 + 0] = rgba2[i * 4 + 0];
-								ref_img.data[i * 3 + 1] = rgba2[i * 4 + 1];
-								ref_img.data[i * 3 + 2] = rgba2[i * 4 + 2];
-							}
+							rgba2rgb(rgba2, ref_img.data, w2, h2);
 						}
 						else if (rgba != nullptr)
 						{
@@ -1738,12 +1729,7 @@ void generation()
 							ref_img.height = h;
 							ref_img.channel = 3;
 							ref_img.data = (uint8_t*)malloc(w * h * 3);
-							for (int i = 0; i < w * h; ++i)
-							{
-								ref_img.data[i * 3 + 0] = rgba[i * 4 + 0];
-								ref_img.data[i * 3 + 1] = rgba[i * 4 + 1];
-								ref_img.data[i * 3 + 2] = rgba[i * 4 + 2];
-							}
+							rgba2rgb(rgba, ref_img.data, w, h);
 						}
 						if (ref_img.data)
 						{
@@ -1760,12 +1746,7 @@ void generation()
 								sdimg.height = rimg.h;
 								sdimg.channel = 3;
 								sdimg.data = (uint8_t*)malloc(rimg.w * rimg.h * 3);
-								for (int i = 0; i < rimg.w * rimg.h; ++i)
-								{
-									sdimg.data[i * 3 + 0] = rimg.rgba[i * 4 + 0];
-									sdimg.data[i * 3 + 1] = rimg.rgba[i * 4 + 1];
-									sdimg.data[i * 3 + 2] = rimg.rgba[i * 4 + 2];
-								}
+								rgba2rgb(rimg.rgba, sdimg.data, rimg.w, rimg.h);
 								sd_reference_images.push_back(sdimg);
 							}
 						}
@@ -1789,17 +1770,7 @@ void generation()
 							rgba = nullptr;
 						}
 						rgba = (unsigned char*)malloc(w * h * 4);
-						struct Color3 { unsigned char r, g, b; };
-						struct Color4 { unsigned char r, g, b, a; };
-						for (int i = 0; i < w * h; ++i)
-						{
-							const Color3& src = ((Color3*)image->data)[i];
-							Color4& dst = ((Color4*)rgba)[i];
-							dst.r = src.r;
-							dst.g = src.g;
-							dst.b = src.b;
-							dst.a = 255;
-						}
+						rgb2rgba(image->data, rgba, w, h);
 						push_history(rgba, w, h, true); // save output!
 					}
 					else
@@ -1868,44 +1839,40 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			PAINTSTRUCT ps;
 			HDC hdc = BeginPaint(hWnd, &ps);
 
-			if (rgba2 != nullptr)
+			// Draw checkerboard with alpha blended image on top:
+			BITMAPINFO bmi = {};
+			bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+			bmi.bmiHeader.biWidth = w2;
+			bmi.bmiHeader.biHeight = -h2;
+			bmi.bmiHeader.biPlanes = 1;
+			bmi.bmiHeader.biBitCount = 32;
+			bmi.bmiHeader.biCompression = BI_RGB;
+			void* bits = nullptr;
+			HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+			if (hBmp && bits)
 			{
-				struct BitmapInfoEx {
-					BITMAPINFOHEADER hdr = {};
-					DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
-				};
-				BitmapInfoEx bi = {};
-				bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
-				bi.hdr.biPlanes = 1;
-				bi.hdr.biBitCount = 32;
-				bi.hdr.biCompression = BI_BITFIELDS;
-				bi.hdr.biWidth = w2;
-				bi.hdr.biHeight = -h2;
-				SetDIBitsToDevice(hdc, 0, 0, w2, h2, 0, 0, 0, h2, rgba2, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
-			}
-			else
-			{
-				// Checkerboard
-				const int cellSize = 32;
-				COLORREF color1 = RGB(35, 35, 35);
-				COLORREF color2 = RGB(25, 25, 25);
-
-				HBRUSH hBrush1 = CreateSolidBrush(color1);
-				HBRUSH hBrush2 = CreateSolidBrush(color2);
-
-				for (int y = 0; y < h2; y += cellSize) {
-					for (int x = 0; x < w2; x += cellSize) {
-						RECT cell = { x, y, x + cellSize, y + cellSize };
-						// Alternate colors based on cell position
-						if (((x / cellSize) + (y / cellSize)) % 2 == 0)
-							FillRect(hdc, &cell, hBrush1);
-						else
-							FillRect(hdc, &cell, hBrush2);
+				unsigned char* dst = (unsigned char*)bits;
+				const unsigned char empty[4] = {};
+				const unsigned char* src = rgba2 ? rgba2 : empty;
+				const int src_stride = rgba2 ? 4 : 0;
+				const int cell = 32;
+				for (int y = 0; y < h2; ++y)
+				{
+					for (int x = 0; x < w2; ++x)
+					{
+						const unsigned char cb = (((x / cell) + (y / cell)) & 1) ? 25 : 35;
+						const unsigned char a = src[3];
+						const unsigned char inv = 255 - a;
+						dst[0] = (src[2] * a + cb * inv) / 255; // B
+						dst[1] = (src[1] * a + cb * inv) / 255; // G
+						dst[2] = (src[0] * a + cb * inv) / 255; // R
+						dst[3] = 255;
+						src += src_stride;
+						dst += 4;
 					}
 				}
-
-				DeleteObject(hBrush1);
-				DeleteObject(hBrush2);
+				SetDIBitsToDevice(hdc, 0, 0, w2, h2, 0, 0, 0, h2, bits, &bmi, DIB_RGB_COLORS);
+				DeleteObject(hBmp);
 			}
 
 			if (!current_download.empty())
