@@ -72,16 +72,6 @@
 
 #define IDI_APPICON 101
 
-enum MODE
-{
-	MODE_IMAGE_GENERATE_ZIMAGE,
-	MODE_IMAGE_GENERATE_FLUX2,
-	MODE_IMAGE_GENERATE_SD3,
-	MODE_IMAGE_EDIT,
-	MODE_ASK,
-	MODE_VIDEO,
-};
-static MODE mode = MODE_IMAGE_GENERATE_ZIMAGE;
 static wchar_t originalWorkingDir[MAX_PATH] = {}; // at application start the working directory is remembered and all file operations will be done based on that
 static wchar_t promptPath[MAX_PATH] = {}; // the absolute path of prompt.txt
 static int w = 512, h = 512, c = 3; // properties of the current image
@@ -112,6 +102,23 @@ static HWND hBtnGenerate = nullptr;
 static HWND hBtnUndo = nullptr;
 static HWND hBtnRedo = nullptr;
 
+enum class MODE
+{
+	IMAGE_GENERATE,
+	IMAGE_EDIT,
+	ASK,
+	VIDEO,
+};
+static MODE mode = MODE::IMAGE_GENERATE;
+
+enum class IMAGE_MODEL
+{
+	Z_IMAGE,
+	FLUX2,
+	STABLE_DIFFUSION_3_5,
+};
+static IMAGE_MODEL image_model = IMAGE_MODEL::Z_IMAGE;
+
 struct ReferenceImage 
 {
 	unsigned char* rgba = nullptr;
@@ -130,7 +137,7 @@ void clear_ref_images()
 }
 int get_ref_container_height()
 {
-	if (mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+	if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO)
 	{
 		return reference_image_area_height;
 	}
@@ -202,22 +209,16 @@ void redraw()
 		switch (mode)
 		{
 		default:
-		case MODE_IMAGE_GENERATE_ZIMAGE:
-			SetWindowText(hBtnGenerate, L"\u2728 Z-Image \u2728");
+		case MODE::IMAGE_GENERATE:
+			SetWindowText(hBtnGenerate, L"\u2728 Image \u2728");
 			break;
-		case MODE_IMAGE_GENERATE_FLUX2:
-			SetWindowText(hBtnGenerate, L"\u2728 Image (Flux) \u2728");
-			break;
-		case MODE_IMAGE_GENERATE_SD3:
-			SetWindowText(hBtnGenerate, L"\u2728 Image (SD) \u2728");
-			break;
-		case MODE_IMAGE_EDIT:
+		case MODE::IMAGE_EDIT:
 			SetWindowText(hBtnGenerate, L"\u2728 Edit \u2728");
 			break;
-		case MODE_ASK:
+		case MODE::ASK:
 			SetWindowText(hBtnGenerate, L"\u2728 Ask \u2728");
 			break;
-		case MODE_VIDEO:
+		case MODE::VIDEO:
 			SetWindowText(hBtnGenerate, L"\u2728 Video \u2728");
 			break;
 		}
@@ -854,7 +855,7 @@ void generation()
 			InvalidateRect(window, NULL, TRUE);
 			};
 
-		if (mode == MODE_ASK)
+		if (mode == MODE::ASK)
 		{
 			// Use llama library for text generation:
 
@@ -1288,7 +1289,7 @@ void generation()
 			wchar_t clip_l_model_path[MAX_PATH] = {};
 			wchar_t clip_g_model_path[MAX_PATH] = {};
 
-			if (mode == MODE_VIDEO)
+			if (mode == MODE::VIDEO)
 			{
 				// Wan 2.2
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan2.2_vae.safetensors");
@@ -1303,18 +1304,7 @@ void generation()
 
 				sd_params.backend = "te=cpu"; // fix for crash on 8GB GPU
 			}
-			else if (mode == MODE_IMAGE_GENERATE_ZIMAGE)
-			{
-				// Z-image
-				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
-				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
-				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
-
-				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
-				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
-				EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
-			}
-			else if (mode == MODE_IMAGE_GENERATE_FLUX2 || mode == MODE_IMAGE_EDIT)
+			else if (image_model == IMAGE_MODEL::FLUX2 || mode == MODE::IMAGE_EDIT)
 			{
 				// Flux 2
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux2-vae.safetensors");
@@ -1327,7 +1317,18 @@ void generation()
 
 				sd_params.backend = "te=cpu"; // fix for crash on 8GB GPU
 			}
-			else if (mode == MODE_IMAGE_GENERATE_SD3)
+			else if (image_model == IMAGE_MODEL::Z_IMAGE)
+			{
+				// Z-image
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
+			}
+			else if (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5)
 			{
 				// Stable Diffusion 3.5 large
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/sd3.5_large-vae.safetensors");
@@ -1372,7 +1373,7 @@ void generation()
 			sd_params.vae_conv_direct = true;
 			//sd_params.flash_attn = true;
 
-			if (mode == MODE_VIDEO)
+			if (mode == MODE::VIDEO)
 			{
 				sd_params.prediction = FLOW_PRED;
 			}
@@ -1436,7 +1437,7 @@ void generation()
 			sd_ctx = new_sd_ctx(&sd_params);
 			if (sd_ctx != nullptr)
 			{
-				if (mode == MODE_VIDEO)
+				if (mode == MODE::VIDEO)
 				{
 					sd_vid_gen_params_t vid_params;
 					sd_vid_gen_params_init(&vid_params);
@@ -1697,17 +1698,17 @@ void generation()
 					img_params.sample_params.guidance.img_cfg = 1.0f;
 					img_params.sample_params.guidance.distilled_guidance = 1.0f;
 
-					if (mode == MODE_IMAGE_GENERATE_ZIMAGE)
-					{
-						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
-						img_params.sample_params.sample_steps = 8;
-					}
-					else if (mode == MODE_IMAGE_GENERATE_FLUX2 || mode == MODE_IMAGE_EDIT)
+					if (image_model == IMAGE_MODEL::FLUX2 || mode == MODE::IMAGE_EDIT)
 					{
 						img_params.sample_params.scheduler = FLUX2_SCHEDULER;
 						img_params.sample_params.sample_steps = 4;
 					}
-					else if (mode == MODE_IMAGE_GENERATE_SD3)
+					else if (image_model == IMAGE_MODEL::Z_IMAGE)
+					{
+						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						img_params.sample_params.sample_steps = 8;
+					}
+					else if (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5)
 					{
 						img_params.sample_params.scheduler = SGM_UNIFORM_SCHEDULER;
 						img_params.sample_params.sample_steps = 28;
@@ -1715,7 +1716,7 @@ void generation()
 					}
 
 					std::vector<sd_image_t> sd_reference_images;
-					if (mode == MODE_IMAGE_EDIT)
+					if (mode == MODE::IMAGE_EDIT)
 					{
 						sd_image_t ref_img = {};
 						if (rgba2 != nullptr)
@@ -2017,7 +2018,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				DeleteObject(hProgressFont);
 			}
 
-			if (mode == MODE_IMAGE_EDIT || mode == MODE_VIDEO)
+			if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO)
 			{
 				// Draw reference image list:
 				RECT ref_rect = { 0, h2, w2, h2 + get_ref_container_height() };
@@ -2171,6 +2172,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
 				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
 
+				HMENU hImageModelMenu = CreatePopupMenu();
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE ? MF_CHECKED : 0), 1200, L"Z-Image");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::FLUX2 ? MF_CHECKED : 0), 1201, L"Flux 2");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5 ? MF_CHECKED : 0), 1202, L"Stable Diffusion 3.5");
+
+				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hImageModelMenu, L"Image generation model...");
+
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
 				for (int i = 0; i < ARRAYSIZE(scale_presets); ++i)
@@ -2240,6 +2248,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (selection == 1103) { // CPU
 					is_cpu = !is_cpu;
+				}
+				else if (selection == 1200) { // Z-image
+					image_model = IMAGE_MODEL::Z_IMAGE;
+				}
+				else if (selection == 1201) { // Flux 2
+					image_model = IMAGE_MODEL::FLUX2;
+				}
+				else if (selection == 1202) { // Stable Diffusion 3.5
+					image_model = IMAGE_MODEL::STABLE_DIFFUSION_3_5;
 				}
 				else if (selection == 8000) // about
 				{
@@ -2366,12 +2383,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			if (pNmhdr->code == BCN_DROPDOWN && pNmhdr->idFrom == IDC_GENERATE_BUTTON)
 			{
 				HMENU hMenu = CreatePopupMenu();
-				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_ZIMAGE ? MF_CHECKED : 0), 101, L"Generate New Image (Z-Image)");
-				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_FLUX2 ? MF_CHECKED : 0), 102, L"Generate New Image (Flux 2)");
-				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_GENERATE_SD3 ? MF_CHECKED : 0), 103, L"Generate New Image (Stable Diffusion 3.5)");
-				AppendMenu(hMenu, MF_STRING | (mode == MODE_IMAGE_EDIT ? MF_CHECKED : 0), 104, L"Edit Image (Flux 2)");
-				AppendMenu(hMenu, MF_STRING | (mode == MODE_ASK ? MF_CHECKED : 0), 105, L"Ask anything (Qwen 3 VL)");
-				AppendMenu(hMenu, MF_STRING | (mode == MODE_VIDEO ? MF_CHECKED : 0), 106, L"Generate Video (Wan 2.2)");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE::IMAGE_GENERATE ? MF_CHECKED : 0), 101, L"Generate New Image");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE::IMAGE_EDIT ? MF_CHECKED : 0), 102, L"Edit Image");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE::ASK ? MF_CHECKED : 0), 103, L"Ask anything");
+				AppendMenu(hMenu, MF_STRING | (mode == MODE::VIDEO ? MF_CHECKED : 0), 104, L"Generate Video");
 
 				RECT rc;
 				GetWindowRect(hBtnGenerate, &rc);
@@ -2381,22 +2396,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 				default:
 				case 101:
-					mode = MODE_IMAGE_GENERATE_ZIMAGE;
+					mode = MODE::IMAGE_GENERATE;
 					break;
 				case 102:
-					mode = MODE_IMAGE_GENERATE_FLUX2;
+					mode = MODE::IMAGE_EDIT;
 					break;
 				case 103:
-					mode = MODE_IMAGE_GENERATE_SD3;
+					mode = MODE::ASK;
 					break;
 				case 104:
-					mode = MODE_IMAGE_EDIT;
-					break;
-				case 105:
-					mode = MODE_ASK;
-					break;
-				case 106:
-					mode = MODE_VIDEO;
+					mode = MODE::VIDEO;
 					break;
 				}
 
