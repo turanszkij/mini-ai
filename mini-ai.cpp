@@ -2135,6 +2135,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
 				}
 				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
+				AppendMenu(hMenu, MF_STRING, 1104, L"Open output folder");
 
 				HMENU hImageModelMenu = CreatePopupMenu();
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE ? MF_CHECKED : 0), 1200, L"Z-Image");
@@ -2212,6 +2213,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (selection == 1103) { // CPU
 					is_cpu = !is_cpu;
+				}
+				else if (selection == 1104) { // output folder
+					wchar_t output_path[MAX_PATH] = {};
+					_snwprintf(output_path, MAX_PATH, L"%s/output/", originalWorkingDir);
+					ShellExecute(NULL, L"open", output_path, NULL, NULL, SW_SHOWNORMAL);
 				}
 				else if (selection == 1200) { // Z-image
 					image_model = IMAGE_MODEL::Z_IMAGE;
