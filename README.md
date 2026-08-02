@@ -16,8 +16,10 @@ Made in C++ and WinAPI, no external dependencies.
     - Flux 2 Klein
 - Ask: enter a text and the AI will answer, also supports image if one is opened
     - Qwen 3 VL
+    - Gemma 4
 - Video: generate a video from text prompt, and/or from the reference images
     - Wan 2.2
+    - LTX 2.3
 - Copy-paste, undo-redo, resize, save, load, drag and drop, PNG, JPG, TGA, ICO support
 
 ## How to use

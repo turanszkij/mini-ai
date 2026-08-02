@@ -78,6 +78,7 @@ static int w = 512, h = 512, c = 3; // properties of the current image
 static unsigned char* rgba = nullptr; // byte data of current image
 static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version
 static int w2, h2; // properties of the current image's scaled version
+static int batch_count = 1;// number of images to generate
 static int video_fps = 24; // video generation frames per second
 static int video_seconds = 2; // video generation total seconds
 static int text_height = 180; // textbox input height
@@ -118,6 +119,20 @@ enum class IMAGE_MODEL
 	STABLE_DIFFUSION_3_5,
 };
 static IMAGE_MODEL image_model = IMAGE_MODEL::Z_IMAGE;
+
+enum class TEXT_MODEL
+{
+	QWEN_3_VL,
+	GEMMA_4,
+};
+static TEXT_MODEL text_model = TEXT_MODEL::QWEN_3_VL;
+
+enum class VIDEO_MODEL
+{
+	WAN_2_2,
+	LTX_2_3,
+};
+static VIDEO_MODEL video_model = VIDEO_MODEL::WAN_2_2;
 
 struct ReferenceImage 
 {
@@ -263,7 +278,7 @@ void update_undo_redo_states()
 	EnableWindow(hBtnUndo, history_index > 0);
 	EnableWindow(hBtnRedo, history_index < (int)history.size() - 1);
 }
-void push_history(unsigned char* raw_rgba, int width, int height, bool save_output = false)
+void push_history(unsigned char* raw_rgba, int width, int height, bool save_output = false, int batch_index = 0)
 {
 	int out_size = 0;
 	unsigned char* png_data = nullptr;
@@ -316,6 +331,7 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 		std::wstringstream ss(L"");
 		ss << output_path << L"/";
 		ss << std::put_time(tmptr, L"%Y-%m-%d %H-%M-%S");
+		ss << " " << batch_index;
 		ss << ".png";
 		std::ofstream file(ss.str().c_str(), std::ios::binary | std::ios::trunc);
 		if (file.is_open())
@@ -927,6 +943,7 @@ void generation()
 			LINK_DLL_FUNCTION(llama_model_get_vocab, llama);
 			LINK_DLL_FUNCTION(llama_sampler_sample, llama);
 			LINK_DLL_FUNCTION(llama_vocab_is_eog, llama);
+			LINK_DLL_FUNCTION(llama_vocab_eot, llama);
 			LINK_DLL_FUNCTION(llama_token_to_piece, llama);
 			LINK_DLL_FUNCTION(llama_batch_get_one, llama);
 			LINK_DLL_FUNCTION(llama_decode, llama);
@@ -939,6 +956,8 @@ void generation()
 			LINK_DLL_FUNCTION(llama_batch_free, llama);
 			LINK_DLL_FUNCTION(llama_get_logits_ith, llama);
 			LINK_DLL_FUNCTION(llama_tokenize, llama);
+			LINK_DLL_FUNCTION(llama_model_chat_template, llama);
+			LINK_DLL_FUNCTION(llama_chat_apply_template, llama);
 
 			LINK_DLL_FUNCTION(ggml_backend_load_all, ggml);
 			LINK_DLL_FUNCTION(ggml_backend_load_all_from_path, ggml);
@@ -999,12 +1018,22 @@ void generation()
 
 			wchar_t model_path[MAX_PATH] = {};
 			char u8_model_path[MAX_PATH] = {};
-			_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+
+			if (text_model == TEXT_MODEL::QWEN_3_VL)
+			{
+				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
+			}
+			else if (text_model == TEXT_MODEL::GEMMA_4)
+			{
+				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/gemma-4-E4B-it-Q4_K_M.gguf");
+				EnsureModelExists(L"https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf?download=true", model_path);
+			}
+
 			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
-			EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
 
 			llama_model_params model_params = llama_model_default_params();
-			model_params.n_gpu_layers = -1;
+			model_params.n_gpu_layers = is_cpu ? 0 : -1;
 			model_params.progress_callback = my_llama_progress_callback;
 
 			llama_context_params ctx_params = llama_context_default_params();
@@ -1022,9 +1051,18 @@ void generation()
 						// Image -> text generation:
 						wchar_t mmproj_path[MAX_PATH] = {};
 						char u8_mmproj_path[MAX_PATH] = {};
-						_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
+
+						if (text_model == TEXT_MODEL::QWEN_3_VL)
+						{
+							_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
+							EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
+						}
+						else if (text_model == TEXT_MODEL::GEMMA_4)
+						{
+							_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-BF16.gguf");
+							EnsureModelExists(L"https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mmproj-BF16.gguf?download=true", mmproj_path);
+						}
 						WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
-						EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
 
 						HMODULE mtmd = LoadLibrary(L"mtmd.dll");
 						if (mtmd == nullptr)
@@ -1051,9 +1089,9 @@ void generation()
 
 						mtmd_context_params mtmd_params = mtmd_context_params_default();
 						mtmd_params.n_threads = 4;
-						mtmd_params.use_gpu = true;
+						mtmd_params.use_gpu = is_cpu ? false : true;
 						mtmd_params.progress_callback = my_llama_progress_callback;
-						mtmd_params.image_min_tokens = 1024; // qwen 3 vl important
+						mtmd_params.image_min_tokens = -1;
 
 						mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
 						if (ctx_mtmd != nullptr && !cancel_request.load())
@@ -1066,22 +1104,43 @@ void generation()
 							}
 							mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
 
-							std::string llama_prompt = std::string(mtmd_default_marker()) + "<|im_start|>system\n";
-							llama_prompt +=
-								"You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n"
-								"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
-							llama_prompt += "<|im_start|>user\n";
-							if (prompt.empty())
+							std::string llama_prompt = std::string(mtmd_default_marker());
+
+							if (text_model == TEXT_MODEL::QWEN_3_VL)
 							{
-								llama_prompt += "Describe the image in detail";
+								llama_prompt +=
+									"<|im_start|>system\n"
+									"You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n"
+									"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+								llama_prompt += "<|im_start|>user\n";
+								if (prompt.empty())
+								{
+									llama_prompt += "Describe the image in detail";
+								}
+								else
+								{
+									llama_prompt += prompt.c_str();
+								}
+								llama_prompt += "\n";
+								llama_prompt += "<|im_end|>\n";
+								llama_prompt += "<|im_start|>assistant\n";
 							}
-							else
+							else if (text_model == TEXT_MODEL::GEMMA_4)
 							{
-								llama_prompt += prompt.c_str();
+								llama_prompt += "<start_of_turn>user\n";
+								llama_prompt += "You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n";
+								llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.\n\n";
+								if (prompt.empty())
+								{
+									llama_prompt += "Describe the image in detail";
+								}
+								else
+								{
+									llama_prompt += prompt;
+								}
+								llama_prompt += "<end_of_turn>\n";
+								llama_prompt += "<start_of_turn>model\n";
 							}
-							llama_prompt += "\n";
-							llama_prompt += "<|im_end|>\n";
-							llama_prompt += "<|im_start|>assistant\n";
 
 							mtmd_input_text input_text = {};
 							input_text.text = llama_prompt.c_str();
@@ -1112,7 +1171,7 @@ void generation()
 									{
 										new_token_id = llama_sampler_sample(smpl, ctx, -1);
 
-										if (started_generating && llama_vocab_is_eog(vocab, new_token_id))
+										if (started_generating && (llama_vocab_is_eog(vocab, new_token_id) || new_token_id == llama_vocab_eot(vocab)))
 											break;
 
 										char buf[256];
@@ -1153,15 +1212,28 @@ void generation()
 					else
 					{
 						// Text -> text generation
-						std::string llama_prompt = "<|im_start|>system\n";
-						llama_prompt +=
-							"You are a helpful assistant, answer the user's questions or follow the orders.\n"
-							"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
-						llama_prompt += "<|im_start|>user\n";
-						llama_prompt += prompt.c_str();
-						llama_prompt += "\n";
-						llama_prompt += "<|im_end|>\n";
-						llama_prompt += "<|im_start|>assistant\n";
+						std::string llama_prompt;
+						if (text_model == TEXT_MODEL::QWEN_3_VL)
+						{
+							llama_prompt +=
+								"<|im_start|>system\n"
+								"You are a helpful assistant, answer the user's questions or follow the orders.\n"
+								"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
+							llama_prompt += "<|im_start|>user\n";
+							llama_prompt += prompt.c_str();
+							llama_prompt += "\n";
+							llama_prompt += "<|im_end|>\n";
+							llama_prompt += "<|im_start|>assistant\n";
+						}
+						else if (text_model == TEXT_MODEL::GEMMA_4)
+						{
+							llama_prompt += "<start_of_turn>user\n";
+							llama_prompt += "You are a helpful assistant, answer the user's questions or follow the orders.\n";
+							llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.\n\n";
+							llama_prompt += prompt;
+							llama_prompt += "<end_of_turn>\n";
+							llama_prompt += "<start_of_turn>model\n";
+						}
 
 						const llama_vocab* vocab = llama_model_get_vocab(model);
 
@@ -1192,7 +1264,7 @@ void generation()
 								while (n_cur < n_decode_max && !cancel_request.load())
 								{
 									llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
-									if (llama_vocab_is_eog(vocab, new_token_id)) {
+									if (llama_vocab_is_eog(vocab, new_token_id) || new_token_id == llama_vocab_eot(vocab)) {
 										break;
 									}
 									char piece_buf[128] = { 0 };
@@ -1307,40 +1379,62 @@ void generation()
 			ggml_backend_load_all_from_path(u8_dll_dir);
 
 			wchar_t vae_path[MAX_PATH] = {};
+			wchar_t audio_vae_path[MAX_PATH] = {};
 			wchar_t t5xxl_path[MAX_PATH] = {};
 			wchar_t text_encoder_path[MAX_PATH] = {};
 			wchar_t diffusion_model_path[MAX_PATH] = {};
 			wchar_t clip_vision_model_path[MAX_PATH] = {};
 			wchar_t clip_l_model_path[MAX_PATH] = {};
 			wchar_t clip_g_model_path[MAX_PATH] = {};
+			wchar_t embeddings_connectors_path[MAX_PATH] = {};
 
 			if (mode == MODE::VIDEO)
 			{
-				// Wan 2.2
-				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan2.2_vae.safetensors");
-				_snwprintf(t5xxl_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/umt5-xxl-encoder-Q3_K_M.gguf");
-				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Wan2.2-TI2V-5B-Q3_K_M.gguf");
-				_snwprintf(clip_vision_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/clip_vision_h.safetensors");
+				if (video_model == VIDEO_MODEL::WAN_2_2)
+				{
+					// Wan 2.2
+					_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/wan2.2_vae.safetensors");
+					_snwprintf(t5xxl_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/umt5-xxl-encoder-Q3_K_M.gguf");
+					_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Wan2.2-TI2V-5B-Q3_K_M.gguf");
+					_snwprintf(clip_vision_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/clip_vision_h.safetensors");
 
-				EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors?download=true", vae_path);
-				EnsureModelExists(L"https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q3_K_M.gguf?download=true", t5xxl_path);
-				EnsureModelExists(L"https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q3_K_M.gguf?download=true", diffusion_model_path);
-				EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors?download=true", clip_vision_model_path);
+					EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan2.2_vae.safetensors?download=true", vae_path);
+					EnsureModelExists(L"https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q3_K_M.gguf?download=true", t5xxl_path);
+					EnsureModelExists(L"https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q3_K_M.gguf?download=true", diffusion_model_path);
+					EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors?download=true", clip_vision_model_path);
 
-				sd_params.backend = "te=cpu"; // fix for crash on 8GB GPU
+					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+				}
+				else if (video_model == VIDEO_MODEL::LTX_2_3)
+				{
+					// LTX 2.3
+					_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ltx-2.3-22b-distilled_video_vae.safetensors");
+					_snwprintf(audio_vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ltx-2.3-22b-distilled_audio_vae.safetensors");
+					_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/gemma-3-12b-it-qat-UD-Q4_K_XL.gguf");
+					_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ltx-2.3-22b-distilled-1.1-Q3_K_M.gguf");
+					_snwprintf(embeddings_connectors_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ltx-2.3-22b-distilled_embeddings_connectors.safetensors");
+
+					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/vae/ltx-2.3-22b-distilled_video_vae.safetensors?download=true", vae_path);
+					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/vae/ltx-2.3-22b-distilled_audio_vae.safetensors?download=true", audio_vae_path);
+					EnsureModelExists(L"https://huggingface.co/unsloth/gemma-3-12b-it-qat-GGUF/resolve/main/gemma-3-12b-it-qat-UD-Q4_K_XL.gguf?download=true", text_encoder_path);
+					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors?download=true", embeddings_connectors_path);
+					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/distilled-1.1/ltx-2.3-22b-distilled-1.1-Q3_K_M.gguf?download=true", diffusion_model_path);
+
+					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+				}
 			}
 			else if (image_model == IMAGE_MODEL::FLUX2 || mode == MODE::IMAGE_EDIT)
 			{
 				// Flux 2
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux2-vae.safetensors");
 				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-8B-Q4_K_M.gguf");
-				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux-2-klein-9b-Q2_K.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux-2-klein-9b-Q4_K_M.gguf");
 
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf?download=true", text_encoder_path);
-				EnsureModelExists(L"https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/resolve/main/flux-2-klein-9b-Q2_K.gguf?download=true", diffusion_model_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/resolve/main/flux-2-klein-9b-Q4_K_M.gguf?download=true", diffusion_model_path);
 
-				sd_params.backend = "te=cpu"; // fix for crash on 8GB GPU
+				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 			else if (image_model == IMAGE_MODEL::Z_IMAGE)
 			{
@@ -1360,38 +1454,46 @@ void generation()
 				_snwprintf(clip_l_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/clip_l.safetensors");
 				_snwprintf(clip_g_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/clip_g.safetensors");
 				_snwprintf(t5xxl_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/t5xxl_fp8_e4m3fn.safetensors");
-				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/sd3.5_large-q4_0.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/sd3.5_large-q4_1.gguf");
 
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/diffusion_pytorch_model.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/clip_l.safetensors?download=true", clip_l_model_path);
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/clip_g.safetensors?download=true", clip_g_model_path);
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/t5xxl_fp8_e4m3fn.safetensors?download=true", t5xxl_path);
-				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/sd3.5_large-q4_0.gguf?download=true", diffusion_model_path);
+				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/sd3.5_large-q4_1.gguf?download=true", diffusion_model_path);
+				
+				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 
 			char u8_vae_path[MAX_PATH] = {};
+			char u8_audio_vae_path[MAX_PATH] = {};
 			char u8_t5xxl_path[MAX_PATH] = {};
 			char u8_text_encoder_path[MAX_PATH] = {};
 			char u8_diffusion_model_path[MAX_PATH] = {};
 			char u8_clip_vision_model_path[MAX_PATH] = {};
 			char u8_clip_l_model_path[MAX_PATH] = {};
 			char u8_clip_g_model_path[MAX_PATH] = {};
+			char u8_embeddings_connectors_path[MAX_PATH] = {};
 
 			WideCharToMultiByte(CP_UTF8, 0, vae_path, -1, u8_vae_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, audio_vae_path, -1, u8_audio_vae_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, t5xxl_path, -1, u8_t5xxl_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, text_encoder_path, -1, u8_text_encoder_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, diffusion_model_path, -1, u8_diffusion_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, clip_vision_model_path, -1, u8_clip_vision_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, clip_l_model_path, -1, u8_clip_l_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, clip_g_model_path, -1, u8_clip_g_model_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, embeddings_connectors_path, -1, u8_embeddings_connectors_path, MAX_PATH, nullptr, nullptr);
 
 			sd_params.vae_path = u8_vae_path;
+			sd_params.audio_vae_path = u8_audio_vae_path;
 			sd_params.llm_path = u8_text_encoder_path;
 			sd_params.t5xxl_path = u8_t5xxl_path;
 			sd_params.diffusion_model_path = u8_diffusion_model_path;
 			sd_params.clip_vision_path = u8_clip_vision_model_path;
 			sd_params.clip_l_path = u8_clip_l_model_path;
 			sd_params.clip_g_path = u8_clip_g_model_path;
+			sd_params.embeddings_connectors_path = u8_embeddings_connectors_path;
 			sd_params.wtype = SD_TYPE_COUNT;
 			sd_params.n_threads = -1;
 			sd_params.rng_type = STD_DEFAULT_RNG;
@@ -1471,15 +1573,31 @@ void generation()
 					vid_params.vae_tiling_params.temporal_tiling = true;
 
 					sd_sample_params_init(&vid_params.sample_params);
-					vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-					vid_params.sample_params.sample_steps = 20;
-					vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
-					vid_params.sample_params.eta = 0.0f;
-					vid_params.sample_params.flow_shift = 3.0f;
 
-					vid_params.sample_params.guidance.txt_cfg = 4.0f;
-					vid_params.sample_params.guidance.img_cfg = 1.0f;
-					vid_params.sample_params.guidance.distilled_guidance = 3.5f;
+					if (video_model == VIDEO_MODEL::WAN_2_2)
+					{
+						vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+						vid_params.sample_params.sample_steps = 20;
+						vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						vid_params.sample_params.eta = 0.0f;
+						vid_params.sample_params.flow_shift = 3.0f;
+
+						vid_params.sample_params.guidance.txt_cfg = 4.0f;
+						vid_params.sample_params.guidance.img_cfg = 1.0f;
+						vid_params.sample_params.guidance.distilled_guidance = 3.5f;
+					}
+					else if (video_model == VIDEO_MODEL::LTX_2_3)
+					{
+						vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+						vid_params.sample_params.sample_steps = 8;
+						vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						vid_params.sample_params.eta = 0.0f;
+						vid_params.sample_params.flow_shift = 0.0f;
+
+						vid_params.sample_params.guidance.txt_cfg = 1.0f;
+						vid_params.sample_params.guidance.img_cfg = 1.0f;
+						vid_params.sample_params.guidance.distilled_guidance = 1.0f;
+					}
 
 					sd_image_t ref_img = {};
 					if (rgba2 != nullptr)
@@ -1582,79 +1700,148 @@ void generation()
 							Microsoft::WRL::ComPtr<IMFSinkWriter> pSinkWriter;
 							Microsoft::WRL::ComPtr<IMFMediaType>  pMediaTypeOut;
 							Microsoft::WRL::ComPtr<IMFMediaType>  pMediaTypeIn;
-							DWORD streamIndex = 0;
+							DWORD videoStreamIndex = 0;
+							DWORD audioStreamIndex = 0;
+							const bool has_audio = (audio != nullptr && audio->data != nullptr && audio->sample_count > 0);
 
 							// 3. Create Sink Writer
-							if (FAILED(MFCreateSinkWriterFromURL(output_file.c_str(), NULL, NULL, &pSinkWriter))) return;
-
-							// 4. Set Output Media Type (H.264 Video in MP4)
-							MFCreateMediaType(&pMediaTypeOut);
-							pMediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-							pMediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
-							pMediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, 5000000);
-							pMediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-							MFSetAttributeSize(pMediaTypeOut.Get(), MF_MT_FRAME_SIZE, width, height);
-							MFSetAttributeRatio(pMediaTypeOut.Get(), MF_MT_FRAME_RATE, (UINT32)vid_params.fps, 1);
-							MFSetAttributeRatio(pMediaTypeOut.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-							pSinkWriter->AddStream(pMediaTypeOut.Get(), &streamIndex);
-
-							// 5. Set Input Media Type (Raw RGB24)
-							MFCreateMediaType(&pMediaTypeIn);
-							pMediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-							pMediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB24);
-							pMediaTypeIn->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-							MFSetAttributeSize(pMediaTypeIn.Get(), MF_MT_FRAME_SIZE, width, height);
-							MFSetAttributeRatio(pMediaTypeIn.Get(), MF_MT_FRAME_RATE, (UINT32)vid_params.fps, 1);
-							MFSetAttributeRatio(pMediaTypeIn.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
-							pSinkWriter->SetInputMediaType(streamIndex, pMediaTypeIn.Get(), NULL);
-
-							// 6. Start Writing
-							pSinkWriter->BeginWriting();
-
-							DWORD cbBuffer = width * height * 3;
-							int stride = width * 3;
-							for (int i = 0; i < num_frames; ++i)
+							if (SUCCEEDED(MFCreateSinkWriterFromURL(output_file.c_str(), NULL, NULL, &pSinkWriter)))
 							{
-								Microsoft::WRL::ComPtr<IMFSample>     pSample;
-								Microsoft::WRL::ComPtr<IMFMediaBuffer> pBuffer;
-								BYTE* pData = NULL;
+								// 4. Set Video Output Media Type (H.264 Video in MP4)
+								MFCreateMediaType(&pMediaTypeOut);
+								pMediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+								pMediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+								pMediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, 5000000);
+								pMediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+								MFSetAttributeSize(pMediaTypeOut.Get(), MF_MT_FRAME_SIZE, width, height);
+								MFSetAttributeRatio(pMediaTypeOut.Get(), MF_MT_FRAME_RATE, (UINT32)vid_params.fps, 1);
+								MFSetAttributeRatio(pMediaTypeOut.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+								pSinkWriter->AddStream(pMediaTypeOut.Get(), &videoStreamIndex);
 
-								MFCreateMemoryBuffer(cbBuffer, &pBuffer);
-								pBuffer->Lock(&pData, NULL, NULL);
+								// 5. Set Video Input Media Type (Raw RGB24)
+								MFCreateMediaType(&pMediaTypeIn);
+								pMediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+								pMediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB24);
+								pMediaTypeIn->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+								MFSetAttributeSize(pMediaTypeIn.Get(), MF_MT_FRAME_SIZE, width, height);
+								MFSetAttributeRatio(pMediaTypeIn.Get(), MF_MT_FRAME_RATE, (UINT32)vid_params.fps, 1);
+								MFSetAttributeRatio(pMediaTypeIn.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+								pSinkWriter->SetInputMediaType(videoStreamIndex, pMediaTypeIn.Get(), NULL);
 
-								// Copy buffer: Flip bottom-up and swap RGB -> BGR
-								for (int y = 0; y < height; ++y)
+								// 6. Set Audio Stream (AAC Output, 16-bit PCM Input)
+								if (has_audio)
 								{
-									const BYTE* srcRow = frames[i].data + (height - 1 - y) * stride;
-									BYTE* dstRow = pData + y * stride;
+									Microsoft::WRL::ComPtr<IMFMediaType> pAudioMediaTypeOut;
+									Microsoft::WRL::ComPtr<IMFMediaType> pAudioMediaTypeIn;
 
-									for (int x = 0; x < width; ++x)
+									// Output AAC
+									MFCreateMediaType(&pAudioMediaTypeOut);
+									pAudioMediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+									pAudioMediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+									pAudioMediaTypeOut->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, audio->channels);
+									pAudioMediaTypeOut->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, audio->sample_rate);
+									pAudioMediaTypeOut->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+									pAudioMediaTypeOut->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, audio->sample_rate * audio->channels * 2);
+									pAudioMediaTypeOut->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, audio->channels * 2);
+									pSinkWriter->AddStream(pAudioMediaTypeOut.Get(), &audioStreamIndex);
+
+									// Input PCM 16-bit
+									MFCreateMediaType(&pAudioMediaTypeIn);
+									pAudioMediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+									pAudioMediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+									pAudioMediaTypeIn->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, audio->channels);
+									pAudioMediaTypeIn->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, audio->sample_rate);
+									pAudioMediaTypeIn->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+									pAudioMediaTypeIn->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, audio->channels * 2);
+									pAudioMediaTypeIn->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, audio->sample_rate * audio->channels * 2);
+									pSinkWriter->SetInputMediaType(audioStreamIndex, pAudioMediaTypeIn.Get(), NULL);
+								}
+
+								// 7. Start Writing
+								pSinkWriter->BeginWriting();
+
+								// Write Video Samples
+								DWORD cbBuffer = width * height * 3;
+								int stride = width * 3;
+								for (int i = 0; i < num_frames; ++i)
+								{
+									Microsoft::WRL::ComPtr<IMFSample>     pSample;
+									Microsoft::WRL::ComPtr<IMFMediaBuffer> pBuffer;
+									BYTE* pData = NULL;
+
+									MFCreateMemoryBuffer(cbBuffer, &pBuffer);
+									pBuffer->Lock(&pData, NULL, NULL);
+
+									// Copy buffer: Flip bottom-up and swap RGB -> BGR
+									for (int y = 0; y < height; ++y)
 									{
-										int idx = x * 3;
-										dstRow[idx + 0] = srcRow[idx + 2];
-										dstRow[idx + 1] = srcRow[idx + 1];
-										dstRow[idx + 2] = srcRow[idx + 0];
+										const BYTE* srcRow = frames[i].data + (height - 1 - y) * stride;
+										BYTE* dstRow = pData + y * stride;
+
+										for (int x = 0; x < width; ++x)
+										{
+											int idx = x * 3;
+											dstRow[idx + 0] = srcRow[idx + 2];
+											dstRow[idx + 1] = srcRow[idx + 1];
+											dstRow[idx + 2] = srcRow[idx + 0];
+										}
+									}
+
+									pBuffer->Unlock();
+									pBuffer->SetCurrentLength(cbBuffer);
+
+									MFCreateSample(&pSample);
+									pSample->AddBuffer(pBuffer.Get());
+
+									pSample->SetSampleTime(i * frameDuration);
+									pSample->SetSampleDuration(frameDuration);
+
+									pSinkWriter->WriteSample(videoStreamIndex, pSample.Get());
+								}
+
+								// Write Audio Sample
+								if (has_audio)
+								{
+									size_t total_samples = audio->sample_count * audio->channels;
+									DWORD cbAudioBuffer = (DWORD)(total_samples * sizeof(int16_t));
+
+									Microsoft::WRL::ComPtr<IMFSample>     pAudioSample;
+									Microsoft::WRL::ComPtr<IMFMediaBuffer> pAudioBuffer;
+									BYTE* pAudioData = NULL;
+
+									if (SUCCEEDED(MFCreateMemoryBuffer(cbAudioBuffer, &pAudioBuffer)))
+									{
+										pAudioBuffer->Lock(&pAudioData, NULL, NULL);
+
+										// Convert float PCM [-1.0f, 1.0f] to int16 PCM
+										int16_t* pcm16 = (int16_t*)pAudioData;
+										for (size_t s = 0; s < total_samples; ++s)
+										{
+											float sample = audio->data[s];
+											if (sample > 1.0f) sample = 1.0f;
+											if (sample < -1.0f) sample = -1.0f;
+											pcm16[s] = (int16_t)(sample * 32767.0f);
+										}
+
+										pAudioBuffer->Unlock();
+										pAudioBuffer->SetCurrentLength(cbAudioBuffer);
+
+										MFCreateSample(&pAudioSample);
+										pAudioSample->AddBuffer(pAudioBuffer.Get());
+
+										pAudioSample->SetSampleTime(0);
+										UINT64 audioDuration = (UINT64)audio->sample_count * 10000000 / audio->sample_rate;
+										pAudioSample->SetSampleDuration(audioDuration);
+
+										pSinkWriter->WriteSample(audioStreamIndex, pAudioSample.Get());
 									}
 								}
 
-								pBuffer->Unlock();
-								pBuffer->SetCurrentLength(cbBuffer);
-
-								MFCreateSample(&pSample);
-								pSample->AddBuffer(pBuffer.Get());
-
-								pSample->SetSampleTime(i * frameDuration);
-								pSample->SetSampleDuration(frameDuration);
-
-								pSinkWriter->WriteSample(streamIndex, pSample.Get());
+								// 8. Finalize Writer
+								pSinkWriter->Finalize();
 							}
-
-							// 7. Finalize and Cleanup
-							pSinkWriter->Finalize();
-
 							MFShutdown();
 							CoUninitialize();
-
 							ShellExecute(NULL, L"open", output_file.c_str(), NULL, NULL, SW_SHOWNORMAL); // open video
 						}
 					}
@@ -1677,7 +1864,7 @@ void generation()
 					img_params.seed = seed;
 					img_params.prompt = prompt.c_str();
 					img_params.strength = 1.0f;
-					img_params.batch_count = 1;
+					img_params.batch_count = batch_count;
 					img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
 
 					sd_sample_params_init(&img_params.sample_params);
@@ -1752,20 +1939,24 @@ void generation()
 						img_params.ref_images_count = (int)sd_reference_images.size();
 					}
 
-					sd_image_t* image = nullptr;
+					sd_image_t* images = nullptr;
 					int num_images = 0;
-					if (generate_image(sd_ctx, &img_params, &image, &num_images))
+					if (generate_image(sd_ctx, &img_params, &images, &num_images))
 					{
-						w = image->width;
-						h = image->height;
-						if (rgba)
+						for (int batch_index = 0; batch_index < num_images; ++batch_index)
 						{
-							free(rgba);
-							rgba = nullptr;
+							const sd_image_t& image = images[batch_index];
+							w = image.width;
+							h = image.height;
+							if (rgba)
+							{
+								free(rgba);
+								rgba = nullptr;
+							}
+							rgba = (unsigned char*)malloc(w * h * 4);
+							rgb2rgba(image.data, rgba, w, h);
+							push_history(rgba, w, h, true, batch_index); // save output!
 						}
-						rgba = (unsigned char*)malloc(w * h * 4);
-						rgb2rgba(image->data, rgba, w, h);
-						push_history(rgba, w, h, true); // save output!
 					}
 					else
 					{
@@ -2086,7 +2277,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				case IDC_CLEAR_BUTTON:
 					if (rgba) { free(rgba); rgba = nullptr; }
 					if (rgba2) { free(rgba2); rgba2 = nullptr; }
-					clear_ref_images();
 					push_history(nullptr, w, h);
 					redraw();
 					break;
@@ -2137,12 +2327,30 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
 				AppendMenu(hMenu, MF_STRING, 1104, L"Open output folder");
 
+				HMENU hBatchCountMenu = CreatePopupMenu();
+				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 1 ? MF_CHECKED : 0), 1111, L"1");
+				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 4 ? MF_CHECKED : 0), 1112, L"4");
+				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 8 ? MF_CHECKED : 0), 1113, L"8");
+				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 16 ? MF_CHECKED : 0), 1114, L"16");
+				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hBatchCountMenu, L"Batch  count...");
+
+				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
 				HMENU hImageModelMenu = CreatePopupMenu();
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE ? MF_CHECKED : 0), 1200, L"Z-Image");
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::FLUX2 ? MF_CHECKED : 0), 1201, L"Flux 2");
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5 ? MF_CHECKED : 0), 1202, L"Stable Diffusion 3.5");
-
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hImageModelMenu, L"Image generation model...");
+
+				HMENU hTextModelMenu = CreatePopupMenu();
+				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::QWEN_3_VL ? MF_CHECKED : 0), 1300, L"Qwen 3 VL");
+				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::GEMMA_4 ? MF_CHECKED : 0), 1301, L"Gemma 4");
+				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hTextModelMenu, L"Text generation model...");
+
+				HMENU hVideoModelMenu = CreatePopupMenu();
+				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::WAN_2_2 ? MF_CHECKED : 0), 1400, L"Wan 2.2");
+				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::LTX_2_3 ? MF_CHECKED : 0), 1401, L"LTX 2.3");
+				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hVideoModelMenu, L"Video generation model...");
 
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
@@ -2219,14 +2427,38 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					_snwprintf(output_path, MAX_PATH, L"%s/output/", originalWorkingDir);
 					ShellExecute(NULL, L"open", output_path, NULL, NULL, SW_SHOWNORMAL);
 				}
-				else if (selection == 1200) { // Z-image
+				else if (selection == 1111) {
+					batch_count = 1;
+				}
+				else if (selection == 1112) {
+					batch_count = 4;
+				}
+				else if (selection == 1113) {
+					batch_count = 8;
+				}
+				else if (selection == 1114) {
+					batch_count = 16;
+				}
+				else if (selection == 1200) {
 					image_model = IMAGE_MODEL::Z_IMAGE;
 				}
-				else if (selection == 1201) { // Flux 2
+				else if (selection == 1201) {
 					image_model = IMAGE_MODEL::FLUX2;
 				}
-				else if (selection == 1202) { // Stable Diffusion 3.5
+				else if (selection == 1202) {
 					image_model = IMAGE_MODEL::STABLE_DIFFUSION_3_5;
+				}
+				else if (selection == 1300) {
+					text_model = TEXT_MODEL::QWEN_3_VL;
+				}
+				else if (selection == 1301) {
+					text_model = TEXT_MODEL::GEMMA_4;
+				}
+				else if (selection == 1400) {
+					video_model = VIDEO_MODEL::WAN_2_2;
+				}
+				else if (selection == 1401) {
+					video_model = VIDEO_MODEL::LTX_2_3;
 				}
 				else if (selection == 8000) // about
 				{
