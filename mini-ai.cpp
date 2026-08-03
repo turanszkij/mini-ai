@@ -1127,19 +1127,16 @@ void generation()
 							}
 							else if (text_model == TEXT_MODEL::GEMMA_4)
 							{
-								llama_prompt += "<start_of_turn>user\n";
+								llama_prompt += "<|turn>system\n";
 								llama_prompt += "You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n";
-								llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.\n\n";
+								llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.<turn|>\n";
+								llama_prompt += "<|turn>user\n";
 								if (prompt.empty())
-								{
 									llama_prompt += "Describe the image in detail";
-								}
 								else
-								{
 									llama_prompt += prompt;
-								}
-								llama_prompt += "<end_of_turn>\n";
-								llama_prompt += "<start_of_turn>model\n";
+								llama_prompt += "<turn|>\n";
+								llama_prompt += "<|turn>model\n";
 							}
 
 							mtmd_input_text input_text = {};
@@ -1227,12 +1224,13 @@ void generation()
 						}
 						else if (text_model == TEXT_MODEL::GEMMA_4)
 						{
-							llama_prompt += "<start_of_turn>user\n";
+							llama_prompt += "<|turn>system\n";
 							llama_prompt += "You are a helpful assistant, answer the user's questions or follow the orders.\n";
-							llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.\n\n";
+							llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.\n";
+							llama_prompt += "<|turn>user\n";
 							llama_prompt += prompt;
-							llama_prompt += "<end_of_turn>\n";
-							llama_prompt += "<start_of_turn>model\n";
+							llama_prompt += "<turn|>\n";
+							llama_prompt += "<|turn>model\n";
 						}
 
 						const llama_vocab* vocab = llama_model_get_vocab(model);
@@ -1987,6 +1985,7 @@ void generation()
 		}
 
 		is_generating.store(false);
+		cancel_request.store(false);
 		sd_ctx = nullptr;
 		progress = 0;
 		redraw();
@@ -2383,17 +2382,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
+				HMENU hVideoMenu = CreatePopupMenu();
 				for (int i = 0; i < ARRAYSIZE(video_presets); ++i)
 				{
 					wchar_t restext[32] = {};
-					_snwprintf(restext, ARRAYSIZE(restext), L"video: %d fps, %d seconds", video_presets[i].fps, video_presets[i].seconds);
+					_snwprintf(restext, ARRAYSIZE(restext), L"%d fps, %d seconds", video_presets[i].fps, video_presets[i].seconds);
 					UINT flags = MF_STRING;
 					if (video_fps == video_presets[i].fps && video_seconds == video_presets[i].seconds)
 					{
 						flags |= MF_CHECKED;
 					}
-					AppendMenu(hMenu, flags, 4000 + i, restext);
+					AppendMenu(hVideoMenu, flags, 4000 + i, restext);
 				}
+				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hVideoMenu, L"Video settings...");
 
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
