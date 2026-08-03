@@ -829,13 +829,19 @@ void generation()
 						if (hRequest && WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,  WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(hRequest, NULL))
 						{
 							UINT64 dwSize = 0;
-							DWORD dwHeaderSize = sizeof(dwSize);
-							WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &dwSize, &dwHeaderSize, WINHTTP_NO_HEADER_INDEX);
+							{
+								wchar_t sizeStr[64] = {};
+								DWORD sizeStrLen = sizeof(sizeStr);
+								if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, sizeStr, &sizeStrLen, WINHTTP_NO_HEADER_INDEX))
+								{
+									dwSize = _wcstoui64(sizeStr, nullptr, 10);
+								}
+							}
 
 							std::ofstream outFile(tempFileName, std::ios::binary);
 							std::vector<char> buffer(4 * 1024 * 1024);
 							DWORD bytesRead = 0;
-							DWORD totalRead = 0;
+							UINT64 totalRead = 0;
 							int last_progress = -1;
 
 							while (WinHttpReadData(hRequest, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
