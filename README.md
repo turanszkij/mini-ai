@@ -12,8 +12,11 @@ Made in C++ and WinAPI, no external dependencies.
     - Z-Image Turbo
     - Flux 2 Klein
     - Stable Diffusion 3.5 Large
+    - Qwen Image
+    - ERNIE-Image Turbo
 - Image Editing: Edit the current image with a prompt and other reference images
     - Flux 2 Klein
+    - Qwen Image Edit
 - Ask: enter a text and the AI will answer, also supports image if one is opened
     - Qwen 3 VL
     - Gemma 4

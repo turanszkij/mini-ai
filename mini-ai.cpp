@@ -87,11 +87,14 @@ static const int splitter_thickness = 8; // image/textbox separator thickness
 static const int reference_image_area_height = 120; // fixed height area for reference images
 static bool is_dragging = false; // separator dragging
 static int progress = 0; // progress of current processing task
+static int download_total_MB = 0; // current total model download size megabytes
+static int download_completed_MB = 0; // current model download completed megabytes
 static bool is_cpu = false; // cpu or gpu execution preference
+static bool resize_fixed = false; // fix for WM_SIZE overriding a resize operation
 static std::atomic_bool is_generating{ false }; // true when background thread is running generation task
 static std::atomic_bool cancel_request{ false }; // true when user pushed STOP button and background generation task should be cancelled before it finishes
 static std::wstring current_download; // if model is downloading, this is printed to feedback text
-static std::string progress_errors; // errors while generation is running are colected here but not presented to user yet
+static std::string progress_errors; // errors while generation is running are collected here but not presented to user yet
 static std::string final_errors; // if generation fails then the errors wil be copied here and shown to user
 static HWND window = nullptr;
 static HWND hEdit = nullptr;
@@ -117,8 +120,17 @@ enum class IMAGE_MODEL
 	Z_IMAGE,
 	FLUX2,
 	STABLE_DIFFUSION_3_5,
+	QWEN_IMAGE,
+	ERNIE_IMAGE,
 };
 static IMAGE_MODEL image_model = IMAGE_MODEL::Z_IMAGE;
+
+enum class EDIT_MODEL
+{
+	FLUX2,
+	QWEN_IMAGE_EDIT,
+};
+static EDIT_MODEL edit_model = EDIT_MODEL::FLUX2;
 
 enum class TEXT_MODEL
 {
@@ -678,8 +690,8 @@ void paste_image(bool is_reference = false)
 						h = new_h;
 
 						push_history(rgba, w, h);
+						resize_window_to_image();
 					}
-					resize_window_to_image();
 					redraw();
 				}
 				return;
@@ -816,75 +828,76 @@ void generation()
 			bool success = false;
 			if (WinHttpCrackUrl(url, 0, 0, &uc))
 			{
-				HINTERNET hSession = WinHttpOpen(L"MiniAI", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-
+				HINTERNET hSession = WinHttpOpen(L"MiniAI", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 				if (hSession)
 				{
+					DWORD httpProto = WINHTTP_PROTOCOL_FLAG_HTTP2;
+					WinHttpSetOption(hSession, WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL, &httpProto, sizeof(httpProto));
 					HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
 					if (hConnect)
 					{
 						DWORD flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
 						HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", path, NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-
-						if (hRequest && WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,  WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(hRequest, NULL))
+						if (hRequest)
 						{
-							UINT64 dwSize = 0;
+							if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(hRequest, NULL))
 							{
-								wchar_t sizeStr[64] = {};
-								DWORD sizeStrLen = sizeof(sizeStr);
-								if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, sizeStr, &sizeStrLen, WINHTTP_NO_HEADER_INDEX))
+								UINT64 dwSize = 0;
 								{
-									dwSize = _wcstoui64(sizeStr, nullptr, 10);
+									wchar_t sizeStr[64] = {};
+									DWORD sizeStrLen = sizeof(sizeStr);
+									if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, sizeStr, &sizeStrLen, WINHTTP_NO_HEADER_INDEX))
+									{
+										dwSize = _wcstoui64(sizeStr, nullptr, 10);
+									}
 								}
-							}
-
-							std::ofstream outFile(tempFileName, std::ios::binary);
-							std::vector<char> buffer(4 * 1024 * 1024);
-							DWORD bytesRead = 0;
-							UINT64 totalRead = 0;
-							int last_progress = -1;
-
-							while (WinHttpReadData(hRequest, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
-							{
-								outFile.write(buffer.data(), bytesRead);
-								totalRead += bytesRead;
-
-								if (dwSize > 0)
+								std::ofstream outFile(tempFileName, std::ios::binary);
+								std::vector<char> buffer(64 * 1024);
+								DWORD bytesRead = 0;
+								UINT64 totalRead = 0;
+								int last_progress = -1;
+								int last_completed_MB = -1;
+								download_total_MB = int(dwSize / (1024ull * 1024ull));
+								download_completed_MB = 0;
+								while (WinHttpReadData(hRequest, buffer.data(), (DWORD)buffer.size(), &bytesRead) && bytesRead > 0)
 								{
-									int current_progress = (int)((double)totalRead / (double)dwSize * 100);
-									if (current_progress != last_progress)
+									outFile.write(buffer.data(), bytesRead);
+									totalRead += bytesRead;
+
+									download_completed_MB = int(totalRead / (1024ull * 1024ull));
+									int current_progress = (dwSize > 0) ? int((double)totalRead / (double)dwSize * 100) : 0;
+									if (current_progress != last_progress || download_completed_MB != last_completed_MB)
 									{
 										progress = current_progress;
 										last_progress = current_progress;
+										last_completed_MB = download_completed_MB;
 										InvalidateRect(window, NULL, FALSE);
 									}
 								}
+								outFile.close();
+								success = (bytesRead == 0);
 							}
-							outFile.close();
-							success = (bytesRead == 0);
-						}
-						else
-						{
-							MessageBox(window, L"Could not connect to URL", L"Download Error", MB_OK | MB_ICONERROR);
-						}
-
-						if (hRequest) 
+							else
+							{
+								MessageBox(window, L"Could not connect to URL", L"Download Error", MB_OK | MB_ICONERROR);
+							}
 							WinHttpCloseHandle(hRequest);
+						}
 						WinHttpCloseHandle(hConnect);
 					}
 					WinHttpCloseHandle(hSession);
 				}
 			}
-
 			if (success) {
 				std::filesystem::rename(tempFileName, fileName);
 			}
 			else {
 				std::filesystem::remove(tempFileName); // clean up partial file
 			}
-
 			current_download.clear();
 			progress = 0;
+			download_total_MB = 0;
+			download_completed_MB = 0;
 			InvalidateRect(window, NULL, TRUE);
 		};
 
@@ -1326,14 +1339,11 @@ void generation()
 			// Use stable diffusion library for image/video generation:
 
 			// Save prompt.txt:
-			if (!prompt.empty())
+			std::ofstream prompt_file(promptPath);
+			if (prompt_file.is_open())
 			{
-				std::ofstream file(promptPath);
-				if (file.is_open())
-				{
-					file << prompt;
-					file.close();
-				}
+				prompt_file << prompt;
+				prompt_file.close();
 			}
 
 			wchar_t dll_dir[MAX_PATH] = {};
@@ -1382,11 +1392,49 @@ void generation()
 			WideCharToMultiByte(CP_UTF8, 0, dll_dir, -1, u8_dll_dir, MAX_PATH, nullptr, nullptr);
 			ggml_backend_load_all_from_path(u8_dll_dir);
 
+			static auto sd_log = [](enum sd_log_level_t level, const char* text, void* data) {
+				if (level == SD_LOG_DEBUG)
+					return;
+				if (level == SD_LOG_ERROR)
+				{
+					progress_errors += text;
+					InvalidateRect(window, NULL, TRUE);
+				}
+				int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+				std::wstring wstr(cnt, 0);
+				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
+				OutputDebugString(wstr.c_str());
+			};
+			static auto sd_callback = [](int step, int steps, float time, void* data) {
+				progress = int(float(step) / float(steps) * 100);
+				redraw();
+			};
+			static auto sd_preview = [](int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data) {
+				if (frame_count == 0)
+					return;
+				sd_image_t* image = &frames[frame_count - 1];
+				w = image->width;
+				h = image->height;
+				if (rgba)
+				{
+					free(rgba);
+					rgba = nullptr;
+				}
+				rgba = (unsigned char*)malloc(w * h * 4);
+				rgb2rgba(image->data, rgba, w, h);
+				redraw();
+			};
+
+			sd_set_log_callback(sd_log, nullptr);
+			sd_set_progress_callback(sd_callback, nullptr);
+			sd_set_preview_callback(sd_preview, PREVIEW_PROJ, 2, true, false, nullptr);
+
 			wchar_t vae_path[MAX_PATH] = {};
 			wchar_t audio_vae_path[MAX_PATH] = {};
 			wchar_t t5xxl_path[MAX_PATH] = {};
 			wchar_t text_encoder_path[MAX_PATH] = {};
 			wchar_t diffusion_model_path[MAX_PATH] = {};
+			wchar_t llm_vision_model_path[MAX_PATH] = {};
 			wchar_t clip_vision_model_path[MAX_PATH] = {};
 			wchar_t clip_l_model_path[MAX_PATH] = {};
 			wchar_t clip_g_model_path[MAX_PATH] = {};
@@ -1427,7 +1475,7 @@ void generation()
 					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 			}
-			else if (image_model == IMAGE_MODEL::FLUX2 || mode == MODE::IMAGE_EDIT)
+			else if (image_model == IMAGE_MODEL::FLUX2 || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2))
 			{
 				// Flux 2
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux2-vae.safetensors");
@@ -1437,6 +1485,30 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/resolve/main/flux-2-klein-9b-Q4_K_M.gguf?download=true", diffusion_model_path);
+
+				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+			}
+			else if (image_model == IMAGE_MODEL::QWEN_IMAGE || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::QWEN_IMAGE_EDIT))
+			{
+				// Qwen Image
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen_Image-VAE.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/QuantStack/Qwen-Image-GGUF/resolve/main/VAE/Qwen_Image-VAE.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen2.5-VL-7B-Instruct-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf?download=true", text_encoder_path);
+
+				if (mode == MODE::IMAGE_EDIT)
+				{
+					_snwprintf(llm_vision_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf");
+					_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen_Image_Edit-Q4_K_M.gguf");
+					EnsureModelExists(L"https://huggingface.co/QuantStack/Qwen-Image-Edit-GGUF/resolve/main/mmproj/Qwen2.5-VL-7B-Instruct-mmproj-BF16.gguf?download=true", llm_vision_model_path);
+					EnsureModelExists(L"https://huggingface.co/QuantStack/Qwen-Image-Edit-GGUF/resolve/main/Qwen_Image_Edit-Q4_K_M.gguf?download=true", diffusion_model_path);
+				}
+				else
+				{
+					_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen_Image-Q4_K_M.gguf");
+					EnsureModelExists(L"https://huggingface.co/QuantStack/Qwen-Image-GGUF/resolve/main/Qwen_Image-Q4_K_M.gguf?download=true", diffusion_model_path);
+				}
 
 				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
@@ -1450,6 +1522,19 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
+			}
+			else if (image_model == IMAGE_MODEL::ERNIE_IMAGE)
+			{
+				// Ernie-image
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux2-vae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf");
+				_snwprintf(llm_vision_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-BF16-ministral.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ernie-image-turbo-Q4_K_M.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/mmproj-BF16.gguf?download=true", llm_vision_model_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/ERNIE-Image-Turbo-GGUF/resolve/main/ernie-image-turbo-Q4_K_M.gguf?download=true", diffusion_model_path);
 			}
 			else if (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5)
 			{
@@ -1474,6 +1559,7 @@ void generation()
 			char u8_t5xxl_path[MAX_PATH] = {};
 			char u8_text_encoder_path[MAX_PATH] = {};
 			char u8_diffusion_model_path[MAX_PATH] = {};
+			char u8_llm_vision_model_path[MAX_PATH] = {};
 			char u8_clip_vision_model_path[MAX_PATH] = {};
 			char u8_clip_l_model_path[MAX_PATH] = {};
 			char u8_clip_g_model_path[MAX_PATH] = {};
@@ -1484,6 +1570,7 @@ void generation()
 			WideCharToMultiByte(CP_UTF8, 0, t5xxl_path, -1, u8_t5xxl_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, text_encoder_path, -1, u8_text_encoder_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, diffusion_model_path, -1, u8_diffusion_model_path, MAX_PATH, nullptr, nullptr);
+			WideCharToMultiByte(CP_UTF8, 0, llm_vision_model_path, -1, u8_llm_vision_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, clip_vision_model_path, -1, u8_clip_vision_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, clip_l_model_path, -1, u8_clip_l_model_path, MAX_PATH, nullptr, nullptr);
 			WideCharToMultiByte(CP_UTF8, 0, clip_g_model_path, -1, u8_clip_g_model_path, MAX_PATH, nullptr, nullptr);
@@ -1494,6 +1581,7 @@ void generation()
 			sd_params.llm_path = u8_text_encoder_path;
 			sd_params.t5xxl_path = u8_t5xxl_path;
 			sd_params.diffusion_model_path = u8_diffusion_model_path;
+			sd_params.llm_vision_path = u8_llm_vision_model_path;
 			sd_params.clip_vision_path = u8_clip_vision_model_path;
 			sd_params.clip_l_path = u8_clip_l_model_path;
 			sd_params.clip_g_path = u8_clip_g_model_path;
@@ -1518,43 +1606,6 @@ void generation()
 			}
 			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
 
-			static auto sd_log = [](enum sd_log_level_t level, const char* text, void* data) {
-				if (level == SD_LOG_DEBUG)
-					return;
-				if (level == SD_LOG_ERROR)
-				{
-					progress_errors += text;
-					InvalidateRect(window, NULL, TRUE);
-				}
-				int cnt = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
-				std::wstring wstr(cnt, 0);
-				MultiByteToWideChar(CP_UTF8, 0, text, -1, wstr.data(), cnt);
-				OutputDebugString(wstr.c_str());
-			};
-			static auto sd_callback = [](int step, int steps, float time, void* data) {
-				progress = int(float(step) / float(steps) * 100);
-				redraw();
-			};
-			static auto sd_preview = [](int step, int frame_count, sd_image_t* frames, bool is_noisy, void* data) {
-				if (frame_count == 0)
-					return;
-				sd_image_t* image = &frames[frame_count - 1];
-				w = image->width;
-				h = image->height;
-				if (rgba)
-				{
-					free(rgba);
-					rgba = nullptr;
-				}
-				rgba = (unsigned char*)malloc(w * h * 4);
-				rgb2rgba(image->data, rgba, w, h);
-				redraw();
-			};
-
-			sd_set_log_callback(sd_log, nullptr);
-			sd_set_progress_callback(sd_callback, nullptr);
-			sd_set_preview_callback(sd_preview, PREVIEW_PROJ, 2, true, false, nullptr);
-
 			sd_ctx = new_sd_ctx(&sd_params);
 			if (sd_ctx != nullptr)
 			{
@@ -1562,8 +1613,8 @@ void generation()
 				{
 					sd_vid_gen_params_t vid_params;
 					sd_vid_gen_params_init(&vid_params);
-					vid_params.width = (w2 / 16) * 16;
-					vid_params.height = (h2 / 16) * 16;
+					vid_params.width = w2;
+					vid_params.height = h2;
 					vid_params.seed = seed;
 					vid_params.prompt = prompt.c_str();
 
@@ -1584,11 +1635,11 @@ void generation()
 						vid_params.sample_params.sample_steps = 20;
 						vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 						vid_params.sample_params.eta = 0.0f;
-						vid_params.sample_params.flow_shift = 3.0f;
+						vid_params.sample_params.flow_shift = 8.0f;
 
 						vid_params.sample_params.guidance.txt_cfg = 4.0f;
 						vid_params.sample_params.guidance.img_cfg = 1.0f;
-						vid_params.sample_params.guidance.distilled_guidance = 3.5f;
+						vid_params.sample_params.guidance.distilled_guidance = 1.0f;
 					}
 					else if (video_model == VIDEO_MODEL::LTX_2_3)
 					{
@@ -1596,7 +1647,7 @@ void generation()
 						vid_params.sample_params.sample_steps = 8;
 						vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 						vid_params.sample_params.eta = 0.0f;
-						vid_params.sample_params.flow_shift = 0.0f;
+						vid_params.sample_params.flow_shift = 1.0f;
 
 						vid_params.sample_params.guidance.txt_cfg = 1.0f;
 						vid_params.sample_params.guidance.img_cfg = 1.0f;
@@ -1608,26 +1659,15 @@ void generation()
 					{
 						ref_img.width = w2;
 						ref_img.height = h2;
-						ref_img.channel = 3;
-						ref_img.data = (uint8_t*)malloc(w2 * h2 * 3);
-						rgba2rgb(rgba2, ref_img.data, w2, h2);
+						ref_img.channel = 4;
+						ref_img.data = rgba2;
 					}
 					else if (rgba != nullptr)
 					{
 						ref_img.width = w;
 						ref_img.height = h;
-						ref_img.channel = 3;
-						ref_img.data = (uint8_t*)malloc(w * h * 3);
-						rgba2rgb(rgba, ref_img.data, w, h);
-					}
-					if (ref_img.data != nullptr && (ref_img.width != vid_params.width || ref_img.height != vid_params.height))
-					{
-						// Prescale the input image to match generation resolution:
-						uint8_t* scaled = stbir_resize_uint8_srgb(ref_img.data, ref_img.width, ref_img.height, 0, (unsigned char*)malloc(vid_params.width * vid_params.height * 3), vid_params.width, vid_params.height, 0, STBIR_RGB);
-						ref_img.width = vid_params.width;
-						ref_img.height = vid_params.height;
-						free(ref_img.data);
-						ref_img.data = scaled;
+						ref_img.channel = 4;
+						ref_img.data = rgba;
 					}
 					vid_params.init_image = ref_img;
 
@@ -1640,9 +1680,8 @@ void generation()
 							sd_image_t sdimg = {};
 							sdimg.width = rimg.w;
 							sdimg.height = rimg.h;
-							sdimg.channel = 3;
-							sdimg.data = (uint8_t*)malloc(rimg.w * rimg.h * 3);
-							rgba2rgb(rimg.rgba, sdimg.data, rimg.w, rimg.h);
+							sdimg.channel = 4;
+							sdimg.data = rimg.rgba;
 							sd_reference_images.push_back(sdimg);
 						}
 					}
@@ -1853,18 +1892,13 @@ void generation()
 					{
 						final_errors = progress_errors;
 					}
-					if (vid_params.init_image.data) free(vid_params.init_image.data);
-					for (auto& sdimg : sd_reference_images)
-					{
-						if (sdimg.data) free(sdimg.data);
-					}
 				}
 				else
 				{
 					sd_img_gen_params_t img_params;
 					sd_img_gen_params_init(&img_params);
-					img_params.width = (w2 / 16) * 16;
-					img_params.height = (h2 / 16) * 16;
+					img_params.width = w2;
+					img_params.height = h2;
 					img_params.seed = seed;
 					img_params.prompt = prompt.c_str();
 					img_params.strength = 1.0f;
@@ -1879,12 +1913,24 @@ void generation()
 					img_params.sample_params.guidance.img_cfg = 1.0f;
 					img_params.sample_params.guidance.distilled_guidance = 1.0f;
 
-					if (image_model == IMAGE_MODEL::FLUX2 || mode == MODE::IMAGE_EDIT)
+					if (image_model == IMAGE_MODEL::FLUX2 || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2))
 					{
 						img_params.sample_params.scheduler = FLUX2_SCHEDULER;
 						img_params.sample_params.sample_steps = 4;
 					}
+					else if (image_model == IMAGE_MODEL::QWEN_IMAGE || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::QWEN_IMAGE_EDIT))
+					{
+						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						img_params.sample_params.sample_steps = 30;
+						img_params.sample_params.guidance.txt_cfg = 2.5f;
+						img_params.sample_params.flow_shift = 3.0f;
+					}
 					else if (image_model == IMAGE_MODEL::Z_IMAGE)
+					{
+						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						img_params.sample_params.sample_steps = 8;
+					}
+					else if (image_model == IMAGE_MODEL::ERNIE_IMAGE)
 					{
 						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 						img_params.sample_params.sample_steps = 8;
@@ -1904,17 +1950,15 @@ void generation()
 						{
 							ref_img.width = w2;
 							ref_img.height = h2;
-							ref_img.channel = 3;
-							ref_img.data = (uint8_t*)malloc(w2 * h2 * 3);
-							rgba2rgb(rgba2, ref_img.data, w2, h2);
+							ref_img.channel = 4;
+							ref_img.data = rgba2;
 						}
 						else if (rgba != nullptr)
 						{
 							ref_img.width = w;
 							ref_img.height = h;
-							ref_img.channel = 3;
-							ref_img.data = (uint8_t*)malloc(w * h * 3);
-							rgba2rgb(rgba, ref_img.data, w, h);
+							ref_img.channel = 4;
+							ref_img.data = rgba;
 						}
 						if (ref_img.data)
 						{
@@ -1929,9 +1973,8 @@ void generation()
 								sd_image_t sdimg = {};
 								sdimg.width = rimg.w;
 								sdimg.height = rimg.h;
-								sdimg.channel = 3;
-								sdimg.data = (uint8_t*)malloc(rimg.w * rimg.h * 3);
-								rgba2rgb(rimg.rgba, sdimg.data, rimg.w, rimg.h);
+								sdimg.channel = 4;
+								sdimg.data = rimg.rgba;
 								sd_reference_images.push_back(sdimg);
 							}
 						}
@@ -1965,11 +2008,6 @@ void generation()
 					else
 					{
 						final_errors = progress_errors;
-					}
-
-					for (auto& sdimg : sd_reference_images)
-					{
-						if (sdimg.data) free(sdimg.data);
 					}
 				}
 				free_sd_ctx(sd_ctx);
@@ -2012,8 +2050,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		{
 		case WM_SIZE:
 		{
-			w2 = LOWORD(lParam);
-			h2 = HIWORD(lParam) - text_height - button_height - splitter_thickness - get_ref_container_height();
+			if (!resize_fixed)
+			{
+				w2 = LOWORD(lParam);
+				h2 = HIWORD(lParam) - text_height - button_height - splitter_thickness - get_ref_container_height();
+			}
 			redraw();
 		}
 		break;
@@ -2069,7 +2110,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			{
 				// Print download progress text to image area:
 				wchar_t status[4096] = {};
-				_snwprintf(status, ARRAYSIZE(status), L"Downloading model: %d%%\n%s", progress, current_download.c_str());
+				_snwprintf(status, ARRAYSIZE(status), L"Downloading model: %d%% (%d MB / %d MB)\n%s", progress, download_completed_MB, download_total_MB, current_download.c_str());
 				SetBkMode(hdc, TRANSPARENT);
 				HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
@@ -2345,7 +2386,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE ? MF_CHECKED : 0), 1200, L"Z-Image");
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::FLUX2 ? MF_CHECKED : 0), 1201, L"Flux 2");
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5 ? MF_CHECKED : 0), 1202, L"Stable Diffusion 3.5");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::QWEN_IMAGE ? MF_CHECKED : 0), 1203, L"Qwen image");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::ERNIE_IMAGE ? MF_CHECKED : 0), 1204, L"Ernie image");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hImageModelMenu, L"Image generation model...");
+
+				HMENU hEditModelMenu = CreatePopupMenu();
+				AppendMenu(hEditModelMenu, MF_STRING | (edit_model == EDIT_MODEL::FLUX2 ? MF_CHECKED : 0), 1500, L"Flux 2");
+				AppendMenu(hEditModelMenu, MF_STRING | (edit_model == EDIT_MODEL::QWEN_IMAGE_EDIT ? MF_CHECKED : 0), 1501, L"Qwen image edit");
+				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hEditModelMenu, L"Image edit model...");
 
 				HMENU hTextModelMenu = CreatePopupMenu();
 				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::QWEN_3_VL ? MF_CHECKED : 0), 1300, L"Qwen 3 VL");
@@ -2455,6 +2503,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				else if (selection == 1202) {
 					image_model = IMAGE_MODEL::STABLE_DIFFUSION_3_5;
 				}
+				else if (selection == 1203) {
+					image_model = IMAGE_MODEL::QWEN_IMAGE;
+				}
+				else if (selection == 1204) {
+					image_model = IMAGE_MODEL::ERNIE_IMAGE;
+				}
 				else if (selection == 1300) {
 					text_model = TEXT_MODEL::QWEN_3_VL;
 				}
@@ -2466,6 +2520,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (selection == 1401) {
 					video_model = VIDEO_MODEL::LTX_2_3;
+				}
+				else if (selection == 1500) {
+					edit_model = EDIT_MODEL::FLUX2;
+				}
+				else if (selection == 1501) {
+					edit_model = EDIT_MODEL::QWEN_IMAGE_EDIT;
 				}
 				else if (selection == 8000) // about
 				{
@@ -2482,6 +2542,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (selection >= 3000) // resolution selection
 				{
+					resize_fixed = true;
 					selection -= 3000;
 					if (selection >= 0 && selection < ARRAYSIZE(resolution_presets))
 					{
@@ -2489,9 +2550,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						h2 = resolution_presets[selection].h;
 						redraw();
 					}
+					resize_fixed = false;
 				}
 				else if (selection >= 2000) // resolution scale selection
 				{
+					resize_fixed = true;
 					selection -= 2000;
 					if (selection >= 0 && selection < ARRAYSIZE(scale_presets))
 					{
@@ -2500,6 +2563,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						h2 = int(h * scale);
 						redraw();
 					}
+					resize_fixed = false;
 				}
 
 				DestroyMenu(hMenu);
@@ -2577,11 +2641,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					}
 					rgba = stbi_load(filename, &w, &h, &c, 4);
 					if (rgba) push_history(rgba, w, h);
+					resize_window_to_image();
 				}
 			}
 
 			SetForegroundWindow(hWnd);
-			resize_window_to_image();
 			redraw();
 		}
 		break;
