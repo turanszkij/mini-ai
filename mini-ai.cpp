@@ -143,6 +143,7 @@ enum class VIDEO_MODEL
 {
 	WAN_2_2,
 	LTX_2_3,
+	MINIMAX_H3,
 };
 static VIDEO_MODEL video_model = VIDEO_MODEL::WAN_2_2;
 
@@ -1474,6 +1475,29 @@ void generation()
 
 					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
+				else if (video_model == VIDEO_MODEL::MINIMAX_H3)
+				{
+					// Minimax H3
+					_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/minimax_h3_video_vae_fp16.safetensors");
+					_snwprintf(audio_vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/minimax_h3_audio_vae_fp32.safetensors");
+					_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/qwen3vl_32b_minimax_h3-Q4_K_M.gguf");
+
+					EnsureModelExists(L"https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors?download=true", vae_path);
+					EnsureModelExists(L"https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true", audio_vae_path);
+					EnsureModelExists(L"https://huggingface.co/leejet/MiniMax-H3-GGUF/resolve/main/qwen3vl_32b_minimax_h3-Q4_K_M.gguf?download=true", text_encoder_path);
+					if (reference_images.empty())
+					{
+						_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/minimax_h3_fl2va_pruned-Q4_K_M.gguf");
+						EnsureModelExists(L"https://huggingface.co/leejet/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va_pruned-Q4_K_M.gguf?download=true", diffusion_model_path);
+					}
+					else
+					{
+						_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/minimax_h3_ref2va_pruned-Q4_K_M.gguf");
+						EnsureModelExists(L"https://huggingface.co/leejet/MiniMax-H3-GGUF/resolve/main/minimax_h3_ref2va_pruned-Q4_K_M.gguf?download=true", diffusion_model_path);
+					}
+
+					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+				}
 			}
 			else if (image_model == IMAGE_MODEL::FLUX2 || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2))
 			{
@@ -1632,7 +1656,7 @@ void generation()
 					if (video_model == VIDEO_MODEL::WAN_2_2)
 					{
 						vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-						vid_params.sample_params.sample_steps = 20;
+						vid_params.sample_params.sample_steps = 30;
 						vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 						vid_params.sample_params.eta = 0.0f;
 						vid_params.sample_params.flow_shift = 8.0f;
@@ -1653,6 +1677,20 @@ void generation()
 						vid_params.sample_params.guidance.img_cfg = 1.0f;
 						vid_params.sample_params.guidance.distilled_guidance = 1.0f;
 					}
+					else if (video_model == VIDEO_MODEL::MINIMAX_H3)
+					{
+						vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
+						vid_params.sample_params.sample_steps = 16;
+						vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						vid_params.sample_params.eta = 0.0f;
+						vid_params.sample_params.flow_shift = 12.0f;
+
+						vid_params.sample_params.guidance.txt_cfg = 1.0f;
+						vid_params.sample_params.guidance.img_cfg = 1.0f;
+						vid_params.sample_params.guidance.distilled_guidance = 1.0f;
+					}
+
+					std::vector<sd_image_t> sd_reference_images;
 
 					sd_image_t ref_img = {};
 					if (rgba2 != nullptr)
@@ -1669,10 +1707,17 @@ void generation()
 						ref_img.channel = 4;
 						ref_img.data = rgba;
 					}
-					vid_params.init_image = ref_img;
+					if (video_model == VIDEO_MODEL::MINIMAX_H3 && !reference_images.empty())
+					{
+						// Minimax has separate model if reference images are used
+						sd_reference_images.push_back(ref_img);
+					}
+					else
+					{
+						vid_params.init_image = ref_img;
+					}
 
 					// Additional reference images
-					std::vector<sd_image_t> sd_reference_images;
 					for (const auto& rimg : reference_images)
 					{
 						if (rimg.rgba && rimg.w > 0 && rimg.h > 0)
@@ -1687,8 +1732,16 @@ void generation()
 					}
 					if (!sd_reference_images.empty())
 					{
-						vid_params.control_frames = sd_reference_images.data();
-						vid_params.control_frames_size = (int)sd_reference_images.size();
+						if (video_model == VIDEO_MODEL::MINIMAX_H3)
+						{
+							vid_params.ref_images = sd_reference_images.data();
+							vid_params.ref_images_count = (int)sd_reference_images.size();
+						}
+						else
+						{
+							vid_params.control_frames = sd_reference_images.data();
+							vid_params.control_frames_size = (int)sd_reference_images.size();
+						}
 					}
 
 					sd_audio_t* audio = nullptr;
@@ -2403,6 +2456,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				HMENU hVideoModelMenu = CreatePopupMenu();
 				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::WAN_2_2 ? MF_CHECKED : 0), 1400, L"Wan 2.2");
 				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::LTX_2_3 ? MF_CHECKED : 0), 1401, L"LTX 2.3");
+				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::MINIMAX_H3 ? MF_CHECKED : 0), 1402, L"Minimax H3");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hVideoModelMenu, L"Video generation model...");
 
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
@@ -2520,6 +2574,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (selection == 1401) {
 					video_model = VIDEO_MODEL::LTX_2_3;
+				}
+				else if (selection == 1402) {
+					video_model = VIDEO_MODEL::MINIMAX_H3;
 				}
 				else if (selection == 1500) {
 					edit_model = EDIT_MODEL::FLUX2;

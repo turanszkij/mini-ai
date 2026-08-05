@@ -23,6 +23,7 @@ Made in C++ and WinAPI, no external dependencies.
 - Video: generate a video from text prompt, and/or from the reference images
     - Wan 2.2
     - LTX 2.3
+    - Minimax H3
 - Copy-paste, undo-redo, resize, save, load, drag and drop, PNG, JPG, TGA, ICO support
 
 ## How to use
