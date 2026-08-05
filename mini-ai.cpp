@@ -32,6 +32,7 @@
 #include <iomanip>
 #include <iostream>
 #include <vector>
+#include <cmath>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_WINDOWS_UTF8
@@ -71,6 +72,7 @@
 #define ID_ACCEL_GENERATE 204
 
 #define IDI_APPICON 101
+#define IDT_ANIM 1001          // timer for lightweight generation activity animation
 
 static wchar_t originalWorkingDir[MAX_PATH] = {}; // at application start the working directory is remembered and all file operations will be done based on that
 static wchar_t promptPath[MAX_PATH] = {}; // the absolute path of prompt.txt
@@ -97,6 +99,7 @@ static std::atomic_bool cancel_request{ false }; // true when user pushed STOP b
 static std::wstring current_download; // if model is downloading, this is printed to feedback text
 static std::string progress_errors; // errors while generation is running are collected here but not presented to user yet
 static std::string final_errors; // if generation fails then the errors wil be copied here and shown to user
+static CRITICAL_SECTION image_cs; // protects rgba / rgba2 / w,h,disp_* between UI and generation threads
 static HWND window = nullptr;
 static HWND hEdit = nullptr;
 static HWND hBtnLoad = nullptr;
@@ -254,6 +257,7 @@ void redraw()
 		}
 	}
 
+	EnterCriticalSection(&image_cs);
 	if (rgba2)
 	{
 		free(rgba2);
@@ -281,6 +285,7 @@ void redraw()
 		}
 		rgba2 = stbir_resize_uint8_srgb(rgba, w, h, 0, (unsigned char*)malloc((size_t)disp_w * disp_h * 4), disp_w, disp_h, 0, STBIR_RGBA);
 	}
+	LeaveCriticalSection(&image_cs);
 
 	int y = h2 + get_ref_container_height() + splitter_thickness;
 
@@ -1434,6 +1439,7 @@ void generation()
 				if (frame_count == 0)
 					return;
 				sd_image_t* image = &frames[frame_count - 1];
+				EnterCriticalSection(&image_cs);
 				w = image->width;
 				h = image->height;
 				if (rgba)
@@ -1443,6 +1449,7 @@ void generation()
 				}
 				rgba = (unsigned char*)malloc(w * h * 4);
 				rgb2rgba(image->data, rgba, w, h);
+				LeaveCriticalSection(&image_cs);
 				redraw();
 			};
 
@@ -1772,6 +1779,7 @@ void generation()
 						if (num_frames > 0)
 						{
 							sd_image_t* image = &frames[num_frames - 1];
+							EnterCriticalSection(&image_cs);
 							w = image->width;
 							h = image->height;
 							if (rgba)
@@ -1781,6 +1789,7 @@ void generation()
 							}
 							rgba = (unsigned char*)malloc(w * h * 4);
 							rgb2rgba(image->data, rgba, w, h);
+							LeaveCriticalSection(&image_cs);
 							push_history(rgba, w, h);
 						}
 
@@ -2052,6 +2061,7 @@ void generation()
 						for (int batch_index = 0; batch_index < num_images; ++batch_index)
 						{
 							const sd_image_t& image = images[batch_index];
+							EnterCriticalSection(&image_cs);
 							w = image.width;
 							h = image.height;
 							if (rgba)
@@ -2061,6 +2071,7 @@ void generation()
 							}
 							rgba = (unsigned char*)malloc(w * h * 4);
 							rgb2rgba(image.data, rgba, w, h);
+							LeaveCriticalSection(&image_cs);
 							push_history(rgba, w, h, true, batch_index); // save output!
 						}
 					}
@@ -2097,11 +2108,15 @@ void generation()
 	SetThreadDescription((HANDLE)worker.native_handle(), L"AI");
 
 	worker.detach();
+
+	// Start lightweight animation timer (indeterminate activity indicator)
+	SetTimer(window, IDT_ANIM, 40, NULL); // ~25 fps
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
 	_wgetcwd(originalWorkingDir, MAX_PATH); // save original working dir at startup
+	InitializeCriticalSection(&image_cs);
 
 	static bool exiting = false;
 	static auto WndProc = [](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
@@ -2119,8 +2134,24 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		break;
 		case WM_DESTROY:
 			exiting = true;
+			KillTimer(hWnd, IDT_ANIM);
 			clear_ref_images();
 			PostQuitMessage(0);
+			break;
+		case WM_TIMER:
+			if (wParam == IDT_ANIM)
+			{
+				if (!is_generating.load() && !cancel_request.load())
+				{
+					KillTimer(hWnd, IDT_ANIM);
+				}
+				else
+				{
+					// Only invalidate the image area for cheap animation updates
+					RECT r = { 0, 0, w2, h2 };
+					InvalidateRect(hWnd, &r, FALSE);
+				}
+			}
 			break;
 		case WM_ERASEBKGND:
 			return 1;
@@ -2129,11 +2160,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			PAINTSTRUCT ps;
 			HDC hdc = BeginPaint(hWnd, &ps);
 
-			// Draw checkerboard with alpha blended image on top:
+			// Single offscreen DIB for everything we paint (image + refs + splitter)
+			const int ref_h = get_ref_container_height();
+			const int paint_h = h2 + ref_h + splitter_thickness;
+			if (w2 <= 0 || paint_h <= 0)
+			{
+				EndPaint(hWnd, &ps);
+				break;
+			}
+
 			BITMAPINFO bmi = {};
 			bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
 			bmi.bmiHeader.biWidth = w2;
-			bmi.bmiHeader.biHeight = -h2;
+			bmi.bmiHeader.biHeight = -paint_h;
 			bmi.bmiHeader.biPlanes = 1;
 			bmi.bmiHeader.biBitCount = 32;
 			bmi.bmiHeader.biCompression = BI_RGB;
@@ -2141,6 +2180,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
 			if (hBmp && bits)
 			{
+				// Checkerboard + image into the top h2 rows
+				EnterCriticalSection(&image_cs);
 				unsigned char* dst = (unsigned char*)bits;
 				const int cell = 32;
 				const int ox = (w2 - disp_w) / 2;
@@ -2152,8 +2193,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						const unsigned char cb = (((x / cell) + (y / cell)) & 1) ? 25 : 35;
 						unsigned char a = 0;
 						unsigned char sr = 0, sg = 0, sb = 0;
-						if (rgba2 && disp_w > 0 && disp_h > 0 &&
-							x >= ox && x < ox + disp_w && y >= oy && y < oy + disp_h)
+						if (rgba2 && disp_w > 0 && disp_h > 0 && x >= ox && x < ox + disp_w && y >= oy && y < oy + disp_h)
 						{
 							const unsigned char* p = rgba2 + ((size_t)(y - oy) * disp_w + (x - ox)) * 4;
 							sr = p[0];
@@ -2169,203 +2209,248 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						dst += 4;
 					}
 				}
-				SetDIBitsToDevice(hdc, 0, 0, w2, h2, 0, 0, 0, h2, bits, &bmi, DIB_RGB_COLORS);
-				DeleteObject(hBmp);
-			}
+				LeaveCriticalSection(&image_cs);
 
-			if (!current_download.empty())
-			{
-				// Print download progress text to image area:
-				wchar_t status[4096] = {};
-				_snwprintf(status, ARRAYSIZE(status), L"Downloading model: %d%% (%d MB / %d MB)\n%s", progress, download_completed_MB, download_total_MB, current_download.c_str());
-				SetBkMode(hdc, TRANSPARENT);
-				HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-				RECT textRect = { 0, 0, w2, h2 };
-				RECT calcRect = textRect;
-				DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
-				int textHeight = calcRect.bottom - calcRect.top;
-				int containerHeight = textRect.bottom - textRect.top;
-				int offset = (containerHeight - textHeight) / 2;
-				textRect.top += offset;
-				textRect.bottom = textRect.top + textHeight;
-				RECT shadowRect = textRect;
-				OffsetRect(&shadowRect, 2, 2);
-				SetTextColor(hdc, RGB(10, 10, 10));
-				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
-				SetTextColor(hdc, RGB(255, 255, 255));
-				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
-				SelectObject(hdc, hOldFont);
-				DeleteObject(hProgressFont);
-			}
-			else if (progress > 0 && progress < 100)
-			{
-				// Print progress text to image area:
-				wchar_t status[32] = {};
-				_snwprintf(status, ARRAYSIZE(status), L"%d%%", progress);
-				SetBkMode(hdc, TRANSPARENT);
-				HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-				RECT textRect = { 0, 0, w2, h2 };
-				RECT shadowRect = textRect;
-				OffsetRect(&shadowRect, 2, 2);
-				SetTextColor(hdc, RGB(10, 10, 10));
-				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-				SetTextColor(hdc, RGB(255, 255, 255));
-				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-				SelectObject(hdc, hOldFont);
-				DeleteObject(hProgressFont);
-			}
-			else if (!final_errors.empty())
-			{
-				int cnt = MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, nullptr, 0);
-				std::wstring wstr(cnt, 0);
-				MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, wstr.data(), cnt);
-				wchar_t status[4096] = {};
-				_snwprintf(status, ARRAYSIZE(status), L"Errors:\n%s", wstr.c_str());
-				SetBkMode(hdc, TRANSPARENT);
-				HFONT hProgressFont = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-				RECT textRect = { 0, 0, w2, h2 };
-				RECT calcRect = textRect;
-				DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
-				int textHeight = calcRect.bottom - calcRect.top;
-				int containerHeight = textRect.bottom - textRect.top;
-				int offset = (containerHeight - textHeight) / 2;
-				textRect.top += offset;
-				textRect.bottom = textRect.top + textHeight;
-				RECT shadowRect = textRect;
-				OffsetRect(&shadowRect, 2, 2);
-				SetTextColor(hdc, RGB(10, 10, 10));
-				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
-				SetTextColor(hdc, RGB(255, 255, 255));
-				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
-				SelectObject(hdc, hOldFont);
-				DeleteObject(hProgressFont);
-			}
-			else if (is_generating.load() || cancel_request.load())
-			{
-				const wchar_t* status = cancel_request.load() ? L"Stopping..." : L"Working...";
-				SetBkMode(hdc, TRANSPARENT);
-				HFONT hProgressFont = CreateFont(64, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-				RECT textRect = { 0, 0, w2, h2 };
-				RECT shadowRect = textRect;
-				OffsetRect(&shadowRect, 2, 2);
-				SetTextColor(hdc, RGB(10, 10, 10));
-				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-				SetTextColor(hdc, RGB(255, 255, 255));
-				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-				SelectObject(hdc, hOldFont);
-				DeleteObject(hProgressFont);
-			}
-			else if (rgba == nullptr && !is_generating.load())
-			{
-				const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here.";
-				SetBkMode(hdc, TRANSPARENT);
-				HFONT hProgressFont = CreateFont(26, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				HFONT hOldFont = (HFONT)SelectObject(hdc, hProgressFont);
-				RECT textRect = { 0, 0, w2, h2 };
-				RECT calcRect = textRect;
-				DrawText(hdc, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
-				int textHeight = calcRect.bottom - calcRect.top;
-				int containerHeight = textRect.bottom - textRect.top;
-				int offset = (containerHeight - textHeight) / 2;
-				textRect.top += offset;
-				textRect.bottom = textRect.top + textHeight;
-				RECT shadowRect = textRect;
-				OffsetRect(&shadowRect, 2, 2);
-				SetTextColor(hdc, RGB(10, 10, 10));
-				DrawText(hdc, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
-				SetTextColor(hdc, RGB(155, 155, 155));
-				DrawText(hdc, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
-				SelectObject(hdc, hOldFont);
-				DeleteObject(hProgressFont);
-			}
-
-			if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO)
-			{
-				// Draw reference image list:
-				RECT ref_rect = { 0, h2, w2, h2 + get_ref_container_height() };
-				HBRUSH hRefBg = CreateSolidBrush(RGB(20, 20, 20));
-				FillRect(hdc, &ref_rect, hRefBg);
-				DeleteObject(hRefBg);
-
-				if (reference_images.empty())
+				// Soft transparent Gaussian glow traveling around the perimeter (blended into the DIB)
+				if ((is_generating.load() || cancel_request.load()) && current_download.empty() && h2 > 20 && w2 > 20)
 				{
-					SetBkMode(hdc, TRANSPARENT);
-					HFONT hRefHintFont = CreateFont(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					HFONT hOldFont = (HFONT)SelectObject(hdc, hRefHintFont);
-					SetTextColor(hdc, RGB(120, 120, 120));
-					DrawText(hdc, L"You can drop additional reference images here", -1, &ref_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-					SelectObject(hdc, hOldFont);
-					DeleteObject(hRefHintFont);
-				}
-				else
-				{
-					int current_x = 8;
-					const int margin = 8;
-					const int target_h = get_ref_container_height() - (margin * 2);
+					const int thickness = 16;
+					const float sigma = 200.0f;
+					const int cycle_ms = 6000;
+					const int peri = 2 * (w2 + h2);
+					const ULONGLONG t = GetTickCount64();
+					float head = (float)((t % cycle_ms) * peri) / (float)cycle_ms;
 
-					for (size_t i = 0; i < reference_images.size(); ++i)
+					auto blend_pixel = [&](int x, int y, float g)
 					{
-						ReferenceImage& reference_image = reference_images[i];
-						int target_w = (int)((float)reference_image.w * ((float)target_h / (float)reference_image.h));
-						if (target_w <= 0) target_w = target_h;
+						if (x < 0 || y < 0 || x >= w2 || y >= h2 || g < 0.03f)
+							return;
+						unsigned char* p = (unsigned char*)bits + ((size_t)y * w2 + x) * 4;
+						const int gr = (int)(g * 80);
+						const int gg = (int)(g * 180);
+						const int gb = (int)(g * 250);
+						const int alpha = (int)(g * 255); // how strongly the glow covers
+						const int inv = 255 - alpha;
+						p[0] = (unsigned char)((gb * 255 + p[0] * inv) / 255); // B
+						p[1] = (unsigned char)((gg * 255 + p[1] * inv) / 255); // G
+						p[2] = (unsigned char)((gr * 255 + p[2] * inv) / 255); // R
+					};
 
-						reference_image.render_rect = { current_x, h2 + margin, current_x + target_w, h2 + margin + target_h };
-						reference_image.close_rect = { reference_image.render_rect.right - 18, reference_image.render_rect.top + 2, reference_image.render_rect.right - 2, reference_image.render_rect.top + 18 };
+					auto process_side = [&](int x0, int y0, int x1, int y1, float peri_start, bool inward_horizontal)
+					{
+						bool horizontal = (y0 == y1);
+						int len = horizontal ? abs(x1 - x0) : abs(y1 - y0);
+						int dir = horizontal ? (x1 >= x0 ? 1 : -1) : (y1 >= y0 ? 1 : -1);
 
-						// Scale RGBA image for reference view
-						unsigned char* scaled_ref = stbir_resize_uint8_srgb(reference_image.rgba, reference_image.w, reference_image.h, 0, (unsigned char*)malloc(target_w * target_h * 4), target_w, target_h, 0, STBIR_RGBA);
-						if (scaled_ref)
+						for (int i = 0; i <= len; ++i)
 						{
-							struct BitmapInfoEx {
-								BITMAPINFOHEADER hdr = {};
-								DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
-							};
-							BitmapInfoEx bi = {};
-							bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
-							bi.hdr.biPlanes = 1;
-							bi.hdr.biBitCount = 32;
-							bi.hdr.biCompression = BI_BITFIELDS;
-							bi.hdr.biWidth = target_w;
-							bi.hdr.biHeight = -target_h;
-							SetDIBitsToDevice(hdc, current_x, h2 + margin, target_w, target_h, 0, 0, 0, target_h, scaled_ref, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
-							free(scaled_ref);
+							float pcoord = peri_start + (float)i;
+							float dist = fabsf(pcoord - head);
+							if (dist > peri * 0.5f) 
+								dist = (float)peri - dist;
+
+							float g = expf(-(dist * dist) / (2.0f * sigma * sigma));
+							if (g < 0.03f)
+								continue;
+
+							int x = horizontal ? (x0 + i * dir) : x0;
+							int y = horizontal ? y0 : (y0 + i * dir);
+
+							// Blend a few pixels inward so the glow has thickness but stays soft
+							for (int d = 0; d < thickness; ++d)
+							{
+								float fall = 1.0f - (float)d / (float)thickness;
+								float gg = g * fall * fall; // quadratic falloff for softer look
+								if (horizontal)
+								{
+									int yy = (y0 == 0) ? d : (h2 - 1 - d);
+									blend_pixel(x, yy, gg);
+								}
+								else
+								{
+									int xx = (x0 == 0) ? d : (w2 - 1 - d);
+									blend_pixel(xx, y, gg);
+								}
+							}
 						}
+					};
 
-						// Draw border around reference image
-						HPEN hPen = CreatePen(PS_SOLID, 3, RGB(120, 120, 120));
-						HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-						HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(HOLLOW_BRUSH));
-						Rectangle(hdc, reference_image.render_rect.left, reference_image.render_rect.top, reference_image.render_rect.right, reference_image.render_rect.bottom);
-						SelectObject(hdc, hOldBrush);
-						SelectObject(hdc, hOldPen);
-						DeleteObject(hPen);
+					process_side(0, 0, w2 - 1, 0, 0.0f, true);                            // top
+					process_side(w2 - 1, 0, w2 - 1, h2 - 1, (float)w2, false);           // right
+					process_side(w2 - 1, h2 - 1, 0, h2 - 1, (float)(w2 + h2), true);     // bottom
+					process_side(0, h2 - 1, 0, 0, (float)(w2 + h2 + w2), false);         // left
+				}
 
-						// Render close badge on top-right corner of reference item
-						HBRUSH hBadgeBrush = CreateSolidBrush(RGB(180, 40, 40));
-						FillRect(hdc, &reference_image.close_rect, hBadgeBrush);
-						DeleteObject(hBadgeBrush);
+				// Select the single DIB into a DC for GDI text / refs / splitter
+				HDC memDC = CreateCompatibleDC(hdc);
+				HBITMAP hOldBmp = (HBITMAP)SelectObject(memDC, hBmp);
+				SetBkMode(memDC, TRANSPARENT);
 
-						SetBkMode(hdc, TRANSPARENT);
-						SetTextColor(hdc, RGB(255, 255, 255));
-						HFONT hXFont = CreateFont(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-						HFONT hOldF = (HFONT)SelectObject(hdc, hXFont);
-						DrawText(hdc, L"\u2715", -1, &reference_image.close_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-						SelectObject(hdc, hOldF);
-						DeleteObject(hXFont);
+				auto draw_centered_text = [&](const wchar_t* status, int fontSize, COLORREF color, bool singleLine)
+				{
+					HFONT hFont = CreateFont(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hOld = (HFONT)SelectObject(memDC, hFont);
+					RECT textRect = { 0, 0, w2, h2 };
 
-						current_x += target_w + margin;
+					if (singleLine)
+					{
+						RECT shadowRect = textRect;
+						OffsetRect(&shadowRect, 2, 2);
+						SetTextColor(memDC, RGB(10, 10, 10));
+						DrawText(memDC, status, -1, &shadowRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						SetTextColor(memDC, color);
+						DrawText(memDC, status, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					}
+					else
+					{
+						RECT calcRect = textRect;
+						DrawText(memDC, status, -1, &calcRect, DT_CENTER | DT_WORDBREAK | DT_CALCRECT);
+						int textHeight = calcRect.bottom - calcRect.top;
+						int offset = (h2 - textHeight) / 2;
+						textRect.top += offset;
+						textRect.bottom = textRect.top + textHeight;
+						RECT shadowRect = textRect;
+						OffsetRect(&shadowRect, 2, 2);
+						SetTextColor(memDC, RGB(10, 10, 10));
+						DrawText(memDC, status, -1, &shadowRect, DT_CENTER | DT_WORDBREAK);
+						SetTextColor(memDC, color);
+						DrawText(memDC, status, -1, &textRect, DT_CENTER | DT_WORDBREAK);
+					}
+
+					SelectObject(memDC, hOld);
+					DeleteObject(hFont);
+				};
+
+				if (!current_download.empty())
+				{
+					wchar_t status[4096] = {};
+					_snwprintf(status, ARRAYSIZE(status), L"Downloading model: %d%% (%d MB / %d MB)\n%s", progress, download_completed_MB, download_total_MB, current_download.c_str());
+					draw_centered_text(status, 22, RGB(255, 255, 255), false);
+				}
+				else if (progress > 0 && progress < 100)
+				{
+					wchar_t status[32] = {};
+					_snwprintf(status, ARRAYSIZE(status), L"%d%%", progress);
+					draw_centered_text(status, 64, RGB(255, 255, 255), true);
+				}
+				else if (!final_errors.empty())
+				{
+					int cnt = MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, nullptr, 0);
+					std::wstring wstr(cnt, 0);
+					MultiByteToWideChar(CP_UTF8, 0, final_errors.c_str(), -1, wstr.data(), cnt);
+					wchar_t status[4096] = {};
+					_snwprintf(status, ARRAYSIZE(status), L"Errors:\n%s", wstr.c_str());
+					draw_centered_text(status, 22, RGB(255, 255, 255), false);
+				}
+				else if (is_generating.load() || cancel_request.load())
+				{
+					const wchar_t* status = cancel_request.load() ? L"Stopping..." : L"Working...";
+					draw_centered_text(status, 64, RGB(255, 255, 255), true);
+				}
+				else if (rgba == nullptr && !is_generating.load())
+				{
+					const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here.";
+					draw_centered_text(status, 26, RGB(155, 155, 155), false);
+				}
+
+				if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO)
+				{
+					RECT ref_rect = { 0, h2, w2, h2 + ref_h };
+
+					// Subtle diagonal-hatch background (distinct from the main checkerboard)
+					for (int y = h2; y < h2 + ref_h; ++y)
+					{
+						unsigned char* row = (unsigned char*)bits + ((size_t)y * w2) * 4;
+						for (int x = 0; x < w2; ++x)
+						{
+							const bool stripe = (((x + y) % 10) == 0);
+							const unsigned char v = stripe ? 32 : 16;
+							row[0] = v;
+							row[1] = v;
+							row[2] = v;
+							row[3] = 255;
+							row += 4;
+						}
+					}
+
+					if (reference_images.empty())
+					{
+						HFONT hRefHintFont = CreateFont(24, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+						HFONT hOldFont = (HFONT)SelectObject(memDC, hRefHintFont);
+						SetTextColor(memDC, RGB(120, 120, 120));
+						DrawText(memDC, L"You can drop additional reference images here", -1, &ref_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						SelectObject(memDC, hOldFont);
+						DeleteObject(hRefHintFont);
+					}
+					else
+					{
+						int current_x = 8;
+						const int margin = 8;
+						const int target_h = ref_h - (margin * 2);
+
+						for (size_t i = 0; i < reference_images.size(); ++i)
+						{
+							ReferenceImage& reference_image = reference_images[i];
+							int target_w = (int)((float)reference_image.w * ((float)target_h / (float)reference_image.h));
+							if (target_w <= 0) target_w = target_h;
+
+							reference_image.render_rect = { current_x, h2 + margin, current_x + target_w, h2 + margin + target_h };
+							reference_image.close_rect = { reference_image.render_rect.right - 18, reference_image.render_rect.top + 2, reference_image.render_rect.right - 2, reference_image.render_rect.top + 18 };
+
+							unsigned char* scaled_ref = stbir_resize_uint8_srgb(reference_image.rgba, reference_image.w, reference_image.h, 0, (unsigned char*)malloc(target_w * target_h * 4), target_w, target_h, 0, STBIR_RGBA);
+							if (scaled_ref)
+							{
+								struct BitmapInfoEx {
+									BITMAPINFOHEADER hdr = {};
+									DWORD rgbmask[3] = { 0x000000FF, 0x0000FF00, 0x00FF0000 };
+								};
+								BitmapInfoEx bi = {};
+								bi.hdr.biSize = sizeof(BITMAPINFOHEADER);
+								bi.hdr.biPlanes = 1;
+								bi.hdr.biBitCount = 32;
+								bi.hdr.biCompression = BI_BITFIELDS;
+								bi.hdr.biWidth = target_w;
+								bi.hdr.biHeight = -target_h;
+								SetDIBitsToDevice(memDC, current_x, h2 + margin, target_w, target_h, 0, 0, 0, target_h, scaled_ref, (BITMAPINFO*)&bi, DIB_RGB_COLORS);
+								free(scaled_ref);
+							}
+
+							HPEN hPen = CreatePen(PS_SOLID, 3, RGB(120, 120, 120));
+							HPEN hOldPen = (HPEN)SelectObject(memDC, hPen);
+							HBRUSH hOldBrush = (HBRUSH)SelectObject(memDC, GetStockObject(HOLLOW_BRUSH));
+							Rectangle(memDC, reference_image.render_rect.left, reference_image.render_rect.top, reference_image.render_rect.right, reference_image.render_rect.bottom);
+							SelectObject(memDC, hOldBrush);
+							SelectObject(memDC, hOldPen);
+							DeleteObject(hPen);
+
+							HBRUSH hBadgeBrush = CreateSolidBrush(RGB(180, 40, 40));
+							FillRect(memDC, &reference_image.close_rect, hBadgeBrush);
+							DeleteObject(hBadgeBrush);
+
+							SetTextColor(memDC, RGB(255, 255, 255));
+							HFONT hXFont = CreateFont(14, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+							HFONT hOldF = (HFONT)SelectObject(memDC, hXFont);
+							DrawText(memDC, L"\u2715", -1, &reference_image.close_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+							SelectObject(memDC, hOldF);
+							DeleteObject(hXFont);
+
+							current_x += target_w + margin;
+						}
 					}
 				}
-			}
 
-			HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
-			RECT splitter_rect = { 0, h2 + get_ref_container_height(), w2, h2 + get_ref_container_height() + splitter_thickness };
-			FillRect(hdc, &splitter_rect, hSplitterBrush);
-			DeleteObject(hSplitterBrush);
+				HBRUSH hSplitterBrush = CreateSolidBrush(RGB(62, 62, 62));
+				RECT splitter_rect = { 0, h2 + ref_h, w2, h2 + ref_h + splitter_thickness };
+				FillRect(memDC, &splitter_rect, hSplitterBrush);
+				DeleteObject(hSplitterBrush);
+
+				SelectObject(memDC, hOldBmp);
+				DeleteDC(memDC);
+
+				SetDIBitsToDevice(hdc, 0, 0, w2, paint_h, 0, 0, 0, paint_h, bits, &bmi, DIB_RGB_COLORS);
+				DeleteObject(hBmp);
+			}
 
 			EndPaint(hWnd, &ps);
 		}
@@ -2982,8 +3067,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 	DestroyAcceleratorTable(hAccel);
 
+	EnterCriticalSection(&image_cs);
 	if (rgba)  free(rgba);
 	if (rgba2) free(rgba2);
+	rgba = nullptr;
+	rgba2 = nullptr;
+	LeaveCriticalSection(&image_cs);
+	DeleteCriticalSection(&image_cs);
 
 	return 0;
 }
