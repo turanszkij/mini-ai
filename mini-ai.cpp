@@ -76,8 +76,9 @@ static wchar_t originalWorkingDir[MAX_PATH] = {}; // at application start the wo
 static wchar_t promptPath[MAX_PATH] = {}; // the absolute path of prompt.txt
 static int w = 512, h = 512, c = 3; // properties of the current image
 static unsigned char* rgba = nullptr; // byte data of current image
-static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version
-static int w2, h2; // properties of the current image's scaled version
+static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version (aspect-preserved fit)
+static int w2, h2; // size of the image display area (from window client)
+static int disp_w = 0, disp_h = 0; // actual size of the scaled display image (aspect preserved, maximized)
 static int batch_count = 1;// number of images to generate
 static int video_fps = 24; // video generation frames per second
 static int video_seconds = 2; // video generation total seconds
@@ -258,9 +259,27 @@ void redraw()
 		free(rgba2);
 		rgba2 = nullptr;
 	}
-	if (w2 > 0 && h2 > 0 && rgba)
+	disp_w = 0;
+	disp_h = 0;
+	if (w2 > 0 && h2 > 0 && rgba && w > 0 && h > 0)
 	{
-		rgba2 = stbir_resize_uint8_srgb(rgba, w, h, 0, (unsigned char*)malloc(w2 * h2 * 4), w2, h2, 0, STBIR_RGBA);
+		// Scale to maximize size inside the display area while preserving aspect ratio
+		const float src_aspect = (float)w / (float)h;
+		if ((float)w2 / src_aspect <= (float)h2)
+		{
+			// Limited by width
+			disp_w = w2;
+			disp_h = (int)((float)w2 / src_aspect + 0.5f);
+			if (disp_h < 1) disp_h = 1;
+		}
+		else
+		{
+			// Limited by height
+			disp_h = h2;
+			disp_w = (int)((float)h2 * src_aspect + 0.5f);
+			if (disp_w < 1) disp_w = 1;
+		}
+		rgba2 = stbir_resize_uint8_srgb(rgba, w, h, 0, (unsigned char*)malloc((size_t)disp_w * disp_h * 4), disp_w, disp_h, 0, STBIR_RGBA);
 	}
 
 	int y = h2 + get_ref_container_height() + splitter_thickness;
@@ -436,7 +455,7 @@ void load_image()
 }
 void save_image()
 {
-	if (!rgba2)
+	if (!rgba2 || disp_w <= 0 || disp_h <= 0)
 	{
 		MessageBox(window, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
 		return;
@@ -464,8 +483,8 @@ void save_image()
 		char filename[MAX_PATH] = {};
 		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
 
-		int width = w2;
-		int height = h2;
+		int width = disp_w;
+		int height = disp_h;
 		bool success = false;
 
 		std::string str_filename(filename);
@@ -594,14 +613,15 @@ void save_image()
 }
 void copy_image()
 {
-	int draw_height = h2;
-	if (!rgba2 || w2 <= 0 || draw_height <= 0)
+	int draw_width = disp_w;
+	int draw_height = disp_h;
+	if (!rgba2 || draw_width <= 0 || draw_height <= 0)
 	{
 		MessageBox(window, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
 		return;
 	}
 
-	size_t row_stride = w2 * 4;
+	size_t row_stride = (size_t)draw_width * 4;
 	size_t image_size = row_stride * draw_height;
 	size_t total_size = sizeof(BITMAPINFOHEADER) + image_size;
 
@@ -614,7 +634,7 @@ void copy_image()
 		// Write standard DIB header chunk
 		BITMAPINFOHEADER* pHeader = (BITMAPINFOHEADER*)pData;
 		pHeader->biSize = sizeof(BITMAPINFOHEADER);
-		pHeader->biWidth = w2;
+		pHeader->biWidth = draw_width;
 		pHeader->biHeight = draw_height; // Positive = bottom-up DIB layout requirements
 		pHeader->biPlanes = 1;
 		pHeader->biBitCount = 32;
@@ -629,7 +649,7 @@ void copy_image()
 			unsigned char* dst_row = pDestPixels + (y * row_stride);
 
 			// Reorder raw storage layer RGBA -> Clipboard BGRA channel alignment configurations
-			for (int x = 0; x < w2; ++x)
+			for (int x = 0; x < draw_width; ++x)
 			{
 				dst_row[x * 4 + 0] = src_row[x * 4 + 2]; // B
 				dst_row[x * 4 + 1] = src_row[x * 4 + 1]; // G
@@ -1693,14 +1713,7 @@ void generation()
 					std::vector<sd_image_t> sd_reference_images;
 
 					sd_image_t ref_img = {};
-					if (rgba2 != nullptr)
-					{
-						ref_img.width = w2;
-						ref_img.height = h2;
-						ref_img.channel = 4;
-						ref_img.data = rgba2;
-					}
-					else if (rgba != nullptr)
+					if (rgba != nullptr)
 					{
 						ref_img.width = w;
 						ref_img.height = h;
@@ -1999,14 +2012,7 @@ void generation()
 					if (mode == MODE::IMAGE_EDIT)
 					{
 						sd_image_t ref_img = {};
-						if (rgba2 != nullptr)
-						{
-							ref_img.width = w2;
-							ref_img.height = h2;
-							ref_img.channel = 4;
-							ref_img.data = rgba2;
-						}
-						else if (rgba != nullptr)
+						if (rgba != nullptr)
 						{
 							ref_img.width = w;
 							ref_img.height = h;
@@ -2136,22 +2142,30 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			if (hBmp && bits)
 			{
 				unsigned char* dst = (unsigned char*)bits;
-				const unsigned char empty[4] = {};
-				const unsigned char* src = rgba2 ? rgba2 : empty;
-				const int src_stride = rgba2 ? 4 : 0;
 				const int cell = 32;
+				const int ox = (w2 - disp_w) / 2;
+				const int oy = (h2 - disp_h) / 2;
 				for (int y = 0; y < h2; ++y)
 				{
 					for (int x = 0; x < w2; ++x)
 					{
 						const unsigned char cb = (((x / cell) + (y / cell)) & 1) ? 25 : 35;
-						const unsigned char a = src[3];
+						unsigned char a = 0;
+						unsigned char sr = 0, sg = 0, sb = 0;
+						if (rgba2 && disp_w > 0 && disp_h > 0 &&
+							x >= ox && x < ox + disp_w && y >= oy && y < oy + disp_h)
+						{
+							const unsigned char* p = rgba2 + ((size_t)(y - oy) * disp_w + (x - ox)) * 4;
+							sr = p[0];
+							sg = p[1];
+							sb = p[2];
+							a = p[3];
+						}
 						const unsigned char inv = 255 - a;
-						dst[0] = (src[2] * a + cb * inv) / 255; // B
-						dst[1] = (src[1] * a + cb * inv) / 255; // G
-						dst[2] = (src[0] * a + cb * inv) / 255; // R
+						dst[0] = (sb * a + cb * inv) / 255; // B
+						dst[1] = (sg * a + cb * inv) / 255; // G
+						dst[2] = (sr * a + cb * inv) / 255; // R
 						dst[3] = 255;
-						src += src_stride;
 						dst += 4;
 					}
 				}

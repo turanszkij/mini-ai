@@ -31,7 +31,7 @@ Made in C++ and WinAPI, no external dependencies.
 - On first use the required AI models will be downloaded from the internet for the currently selected mode into the `models/` folder, which can take long as they are often several GB large.
 - Generated images and videos will be saved to the `output/` folder near the exe.
 - You can resize the window to set your generation resolution by dragging the window bounds, or choosing from  resolution presets in the right-click menu.
-- You can use Ctrl+C and Ctrl+V to copy images from/to the mini-ai application.
+- You can copy images from/to the mini-ai application directly.
 - You can create a seed.txt and write your random seed in there if you would like to fix the generation seed.
 - To change image generation model, right click -> Image generation model... -> choose model
 - You can save any image as `.ico` to use for a windows application icon, it will have multiple resolutions embedded in the file.
