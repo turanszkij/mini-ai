@@ -3028,24 +3028,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 	// Load prompt from prompt.txt if available:
 	_snwprintf(promptPath, MAX_PATH, L"%s/prompt.txt", originalWorkingDir);
-	std::ifstream file(promptPath);
-	if (file.is_open()) 
+	std::string prompt;
+	std::ifstream file(promptPath, std::ios::binary | std::ios::ate);
+	if (file.is_open())
 	{
-		std::string prompt;
-		std::ifstream file(promptPath, std::ios::binary | std::ios::ate);
-		if (file.is_open())
-		{
-			size_t dataSize = (size_t)file.tellg();
-			file.seekg((std::streampos)0);
-			prompt.resize(dataSize + 1, 0);
-			file.read((char*)prompt.data(), dataSize);
-			file.close();
-		}
+		size_t dataSize = (size_t)file.tellg();
+		file.seekg((std::streampos)0);
+		prompt.resize(dataSize + 1, 0);
+		file.read((char*)prompt.data(), dataSize);
+		file.close();
+
 		int cnt = MultiByteToWideChar(CP_UTF8, 0, prompt.c_str(), -1, nullptr, 0);
 		std::wstring wstr(cnt, 0);
 		MultiByteToWideChar(CP_UTF8, 0, prompt.c_str(), -1, wstr.data(), cnt);
 		SetWindowText(hEdit, wstr.c_str());
-		file.close();
 	}
 	else
 	{
