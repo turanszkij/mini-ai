@@ -15,6 +15,9 @@
 #pragma comment(lib, "winhttp.lib")
 
 #include <wrl/client.h>
+#include <wincodec.h>
+#pragma comment(lib, "windowscodecs.lib")
+
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
@@ -25,6 +28,7 @@
 
 #include <thread>
 #include <string>
+#include <cstring>
 #include <fstream>
 #include <atomic>
 #include <filesystem>
@@ -420,6 +424,57 @@ void redo()
 	}
 	update_undo_redo_states();
 }
+static unsigned char* load_image_file(const char* filename, int* out_w, int* out_h, int* out_c)
+{
+	auto is_heic = [](const char* path) -> bool {
+		size_t len = strlen(path);
+		if (len < 5) return false;
+		if (_stricmp(path + len - 5, ".heic") == 0) return true;
+		if (_stricmp(path + len - 5, ".HEIC") == 0) return true;
+		if (_stricmp(path + len - 5, ".heif") == 0) return true;
+		if (_stricmp(path + len - 5, ".HEIF") == 0) return true;
+		return false;
+	};
+
+	if (is_heic(filename))
+	{
+		wchar_t wpath[MAX_PATH] = {};
+		MultiByteToWideChar(CP_UTF8, 0, filename, -1, wpath, MAX_PATH);
+		Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+		if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))))
+			return nullptr;
+		Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+		if (FAILED(factory->CreateDecoderFromFilename(wpath, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder)))
+			return nullptr;
+		Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+		if (FAILED(decoder->GetFrame(0, &frame)))
+			return nullptr;
+		Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+		if (FAILED(factory->CreateFormatConverter(&converter)))
+			return nullptr;
+		if (FAILED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom)))
+			return nullptr;
+		UINT width = 0, height = 0;
+		if (FAILED(converter->GetSize(&width, &height)) || width == 0 || height == 0)
+			return nullptr;
+		const size_t stride = (size_t)width * 4;
+		const size_t buffer_size = stride * height;
+		unsigned char* pixels = (unsigned char*)malloc(buffer_size);
+		if (!pixels)
+			return nullptr;
+		if (FAILED(converter->CopyPixels(nullptr, (UINT)stride, (UINT)buffer_size, pixels)))
+		{
+			free(pixels);
+			return nullptr;
+		}
+		*out_w = (int)width;
+		*out_h = (int)height;
+		*out_c = 4;
+		return pixels;
+	}
+
+	return stbi_load(filename, out_w, out_h, out_c, 4);
+}
 void load_image()
 {
 	wchar_t szFile[MAX_PATH] = {};
@@ -428,7 +483,7 @@ void load_image()
 	ofn.hwndOwner = window;
 	ofn.lpstrFile = szFile;
 	ofn.nMaxFile = sizeof(szFile) / sizeof(szFile[0]);
-	ofn.lpstrFilter = L"Images\0*.png;*.jpg;*.jpeg;*.bmp;*.tga\0All Files\0*.*\0";
+	ofn.lpstrFilter = L"Images\0*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.heic;*.heif\0All Files\0*.*\0";
 	ofn.nFilterIndex = 1;
 	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
 
@@ -447,7 +502,7 @@ void load_image()
 			free(rgba2);
 			rgba2 = nullptr;
 		}
-		rgba = stbi_load(filename, &w, &h, &c, 4);
+		rgba = load_image_file(filename, &w, &h, &c);
 
 		if (rgba)
 		{
@@ -694,7 +749,7 @@ void paste_image(bool is_reference = false)
 				WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
 
 				int new_w, new_h, new_c;
-				unsigned char* new_rgba = stbi_load(filename, &new_w, &new_h, &new_c, 4);
+				unsigned char* new_rgba = load_image_file(filename, &new_w, &new_h, &new_c);
 
 				if (new_rgba)
 				{
@@ -2117,6 +2172,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 {
 	_wgetcwd(originalWorkingDir, MAX_PATH); // save original working dir at startup
 	InitializeCriticalSection(&image_cs);
+	CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
 	static bool exiting = false;
 	static auto WndProc = [](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
@@ -2773,7 +2829,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				if (is_ref_area)
 				{
 					int rw = 0, rh = 0, rc = 0;
-					unsigned char* rrgba = stbi_load(filename, &rw, &rh, &rc, 4);
+					unsigned char* rrgba = load_image_file(filename, &rw, &rh, &rc);
 					if (rrgba)
 					{
 						ReferenceImage reference_image;
@@ -2795,7 +2851,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						free(rgba2);
 						rgba2 = nullptr;
 					}
-					rgba = stbi_load(filename, &w, &h, &c, 4);
+					rgba = load_image_file(filename, &w, &h, &c);
 					if (rgba) push_history(rgba, w, h);
 					resize_window_to_image();
 				}
