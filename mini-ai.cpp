@@ -1365,7 +1365,7 @@ void generation()
 			// Use stable diffusion library for image/video generation:
 
 			// Save prompt.txt:
-			std::ofstream prompt_file(promptPath);
+			std::ofstream prompt_file(promptPath, std::ios::binary); // binary because text mode inserts newlines
 			if (prompt_file.is_open())
 			{
 				prompt_file << prompt;
