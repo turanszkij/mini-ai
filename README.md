@@ -24,7 +24,7 @@ Made in C++ and WinAPI, no external dependencies.
     - Wan 2.2
     - LTX 2.3
     - Minimax H3
-- Copy-paste, undo-redo, resize, save, load, drag and drop, PNG, JPG, TGA, ICO support
+- Copy-paste, undo-redo, resize, save, load, drag and drop, PNG, JPG, TGA, HEIC, ICO support
 
 ## How to use
 - Write a text prompt into the textbox and hit the bottom right button to generate image (or choose an other mode from its drop-down menu)
@@ -32,8 +32,9 @@ Made in C++ and WinAPI, no external dependencies.
 - Generated images and videos will be saved to the `output/` folder near the exe.
 - You can resize the window to set your generation resolution by dragging the window bounds, or choosing from  resolution presets in the right-click menu.
 - You can copy images from/to the mini-ai application directly.
+- To change image/video/text generation model, right click -> Image generation model... -> choose model
 - You can create a seed.txt and write your random seed in there if you would like to fix the generation seed.
-- To change image generation model, right click -> Image generation model... -> choose model
+- You can create a negative_prompt.txt and write your negative prompt there if you would like to change the default.
 - You can save any image as `.ico` to use for a windows application icon, it will have multiple resolutions embedded in the file.
 
 ## How to build

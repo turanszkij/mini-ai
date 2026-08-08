@@ -888,6 +888,16 @@ void generation()
 			seedfile.close();
 		}
 
+		std::string negative_prompt = "ugly, deformed, bad anatomy, extra limbs, poorly drawn hands, missing fingers, blurry, low quality, worst quality, text, watermark, signature, jpeg artifacts";
+		wchar_t negative_prompt_path[MAX_PATH] = {};
+		_snwprintf(negative_prompt_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/negative_prompt.txt");
+		std::ifstream negative_prompt_file(negative_prompt_path);
+		if (negative_prompt_file.is_open())
+		{
+			negative_prompt_file >> negative_prompt;
+			negative_prompt_file.close();
+		}
+
 		static auto EnsureModelExists = [](const wchar_t* url, const wchar_t* fileName) {
 			if (std::filesystem::exists(fileName))
 				return;
@@ -1723,6 +1733,7 @@ void generation()
 					vid_params.height = h2;
 					vid_params.seed = seed;
 					vid_params.prompt = prompt.c_str();
+					vid_params.negative_prompt = negative_prompt.c_str();
 
 					vid_params.fps = video_fps;
 					vid_params.video_frames = vid_params.fps * video_seconds + 1; // +1 start frame
@@ -2030,10 +2041,11 @@ void generation()
 					img_params.width = w2;
 					img_params.height = h2;
 					img_params.seed = seed;
-					img_params.prompt = prompt.c_str();
 					img_params.strength = 1.0f;
 					img_params.batch_count = batch_count;
 					img_params.vae_tiling_params.enabled = true; // reduces memory usage in VAE decode pass, but slower processing
+					img_params.prompt = prompt.c_str();
+					img_params.negative_prompt = negative_prompt.c_str();
 
 					sd_sample_params_init(&img_params.sample_params);
 					img_params.sample_params.eta = 0.0f;
