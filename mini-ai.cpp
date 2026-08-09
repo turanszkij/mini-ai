@@ -1786,7 +1786,14 @@ void generation()
 					std::vector<sd_image_t> sd_reference_images;
 
 					sd_image_t ref_img = {};
-					if (rgba != nullptr)
+					if (rgba2 != nullptr)
+					{
+						ref_img.width = disp_w;
+						ref_img.height = disp_h;
+						ref_img.channel = 4;
+						ref_img.data = rgba2;
+					}
+					else if (rgba != nullptr)
 					{
 						ref_img.width = w;
 						ref_img.height = h;
@@ -2088,7 +2095,14 @@ void generation()
 					if (mode == MODE::IMAGE_EDIT)
 					{
 						sd_image_t ref_img = {};
-						if (rgba != nullptr)
+						if (rgba2 != nullptr)
+						{
+							ref_img.width = disp_w;
+							ref_img.height = disp_h;
+							ref_img.channel = 4;
+							ref_img.data = rgba2;
+						}
+						else if (rgba != nullptr)
 						{
 							ref_img.width = w;
 							ref_img.height = h;
