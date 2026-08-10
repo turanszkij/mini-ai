@@ -125,20 +125,23 @@ static MODE mode = MODE::IMAGE_GENERATE;
 
 enum class IMAGE_MODEL
 {
-	Z_IMAGE,
-	FLUX2,
+	Z_IMAGE_TURBO,
+	Z_IMAGE_BASE,
+	FLUX2_KLEIN_9B,
+	FLUX2_KLEIN_4B,
 	STABLE_DIFFUSION_3_5,
 	QWEN_IMAGE,
 	ERNIE_IMAGE,
 };
-static IMAGE_MODEL image_model = IMAGE_MODEL::Z_IMAGE;
+static IMAGE_MODEL image_model = IMAGE_MODEL::Z_IMAGE_TURBO;
 
 enum class EDIT_MODEL
 {
-	FLUX2,
+	FLUX2_KLEIN_9B,
+	FLUX2_KLEIN_4B,
 	QWEN_IMAGE_EDIT,
 };
-static EDIT_MODEL edit_model = EDIT_MODEL::FLUX2;
+static EDIT_MODEL edit_model = EDIT_MODEL::FLUX2_KLEIN_9B;
 
 enum class TEXT_MODEL
 {
@@ -1009,6 +1012,33 @@ void generation()
 				dstRGB[i * 3 + 2] = srcRGBA[i * 4 + 2];
 			}
 		};
+		static auto rgba2ref = [](const unsigned char* rgba, int in_w, int in_h) {
+			sd_image_t ref = {};
+			ref.channel = 4;
+			ref.width = (uint32_t)in_w;
+			ref.height = (uint32_t)in_h;
+			if (in_w > w2 && in_h > h2)
+			{
+				// Rescale to not be greater than display area (generation resolution) while keeping aspect
+				const float src_aspect = (float)in_w / (float)in_h;
+				if ((float)w2 / src_aspect <= (float)h2)
+				{
+					// Limited by width
+					ref.width = w2;
+					ref.height = (int)((float)w2 / src_aspect + 0.5f);
+					if (ref.height < 1) ref.height = 1;
+				}
+				else
+				{
+					// Limited by height
+					ref.height = h2;
+					ref.width = (int)((float)h2 * src_aspect + 0.5f);
+					if (ref.width < 1) ref.width = 1;
+				}
+			}
+			ref.data = stbir_resize_uint8_srgb(rgba, in_w, in_h, 0, (unsigned char*)malloc((size_t)ref.width * ref.height * 4), ref.width, ref.height, 0, STBIR_RGBA);
+			return ref;
+		};
 
 		if (mode == MODE::ASK)
 		{
@@ -1591,9 +1621,9 @@ void generation()
 					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 			}
-			else if (image_model == IMAGE_MODEL::FLUX2 || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2))
+			else if (image_model == IMAGE_MODEL::FLUX2_KLEIN_9B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_9B))
 			{
-				// Flux 2
+				// Flux 2 Klein 9B
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux2-vae.safetensors");
 				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-8B-Q4_K_M.gguf");
 				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux-2-klein-9b-Q4_K_M.gguf");
@@ -1603,6 +1633,17 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/resolve/main/flux-2-klein-9b-Q4_K_M.gguf?download=true", diffusion_model_path);
 
 				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+			}
+			else if (image_model == IMAGE_MODEL::FLUX2_KLEIN_4B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_4B))
+			{
+				// Flux 2 Klein 4B
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux2-vae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Q4_K_M.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/flux-2-klein-4b-Q4_0.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/leejet/FLUX.2-klein-4B-GGUF/resolve/main/flux-2-klein-4b-Q4_0.gguf?download=true", diffusion_model_path);
 			}
 			else if (image_model == IMAGE_MODEL::QWEN_IMAGE || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::QWEN_IMAGE_EDIT))
 			{
@@ -1628,9 +1669,9 @@ void generation()
 
 				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
-			else if (image_model == IMAGE_MODEL::Z_IMAGE)
+			else if (image_model == IMAGE_MODEL::Z_IMAGE_TURBO)
 			{
-				// Z-image
+				// Z-image Turbo
 				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
 				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
 				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z_image_turbo-Q4_K.gguf");
@@ -1638,6 +1679,19 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/leejet/Z-Image-Turbo-GGUF/resolve/main/z_image_turbo-Q4_K.gguf?download=true", diffusion_model_path);
+			}
+			else if (image_model == IMAGE_MODEL::Z_IMAGE_BASE)
+			{
+				// Z-image Base
+				_snwprintf(vae_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/ae.safetensors");
+				_snwprintf(text_encoder_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+				_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/z-image-Q4_K_M.gguf");
+
+				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
+				EnsureModelExists(L"https://huggingface.co/unsloth/Z-Image-GGUF/resolve/main/z-image-Q4_K_M.gguf?download=true", diffusion_model_path);
+
+				sd_params.backend = "cpu"; // doesn't work on GPU now, has some issue
 			}
 			else if (image_model == IMAGE_MODEL::ERNIE_IMAGE)
 			{
@@ -1788,17 +1842,11 @@ void generation()
 					sd_image_t ref_img = {};
 					if (rgba2 != nullptr)
 					{
-						ref_img.width = disp_w;
-						ref_img.height = disp_h;
-						ref_img.channel = 4;
-						ref_img.data = rgba2;
+						ref_img = rgba2ref(rgba2, disp_w, disp_h);
 					}
 					else if (rgba != nullptr)
 					{
-						ref_img.width = w;
-						ref_img.height = h;
-						ref_img.channel = 4;
-						ref_img.data = rgba;
+						ref_img = rgba2ref(rgba, w, h);
 					}
 					if (video_model == VIDEO_MODEL::MINIMAX_H3 && !reference_images.empty())
 					{
@@ -1815,12 +1863,7 @@ void generation()
 					{
 						if (rimg.rgba && rimg.w > 0 && rimg.h > 0)
 						{
-							sd_image_t sdimg = {};
-							sdimg.width = rimg.w;
-							sdimg.height = rimg.h;
-							sdimg.channel = 4;
-							sdimg.data = rimg.rgba;
-							sd_reference_images.push_back(sdimg);
+							sd_reference_images.push_back(rgba2ref(rimg.rgba, rimg.w, rimg.h));
 						}
 					}
 					if (!sd_reference_images.empty())
@@ -2040,6 +2083,10 @@ void generation()
 					{
 						final_errors = progress_errors;
 					}
+					for (auto& x : sd_reference_images)
+					{
+						free(x.data);
+					}
 				}
 				else
 				{
@@ -2062,7 +2109,12 @@ void generation()
 					img_params.sample_params.guidance.img_cfg = 1.0f;
 					img_params.sample_params.guidance.distilled_guidance = 1.0f;
 
-					if (image_model == IMAGE_MODEL::FLUX2 || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2))
+					if (image_model == IMAGE_MODEL::FLUX2_KLEIN_9B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_9B))
+					{
+						img_params.sample_params.scheduler = FLUX2_SCHEDULER;
+						img_params.sample_params.sample_steps = 4;
+					}
+					else if (image_model == IMAGE_MODEL::FLUX2_KLEIN_4B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_4B))
 					{
 						img_params.sample_params.scheduler = FLUX2_SCHEDULER;
 						img_params.sample_params.sample_steps = 4;
@@ -2074,10 +2126,16 @@ void generation()
 						img_params.sample_params.guidance.txt_cfg = 2.5f;
 						img_params.sample_params.flow_shift = 3.0f;
 					}
-					else if (image_model == IMAGE_MODEL::Z_IMAGE)
+					else if (image_model == IMAGE_MODEL::Z_IMAGE_TURBO)
 					{
 						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 						img_params.sample_params.sample_steps = 8;
+					}
+					else if (image_model == IMAGE_MODEL::Z_IMAGE_BASE)
+					{
+						img_params.sample_params.scheduler = SIMPLE_SCHEDULER;
+						img_params.sample_params.sample_steps = 32;
+						img_params.sample_params.guidance.txt_cfg = 5.0f;
 					}
 					else if (image_model == IMAGE_MODEL::ERNIE_IMAGE)
 					{
@@ -2097,17 +2155,11 @@ void generation()
 						sd_image_t ref_img = {};
 						if (rgba2 != nullptr)
 						{
-							ref_img.width = disp_w;
-							ref_img.height = disp_h;
-							ref_img.channel = 4;
-							ref_img.data = rgba2;
+							ref_img = rgba2ref(rgba2, disp_w, disp_h);
 						}
 						else if (rgba != nullptr)
 						{
-							ref_img.width = w;
-							ref_img.height = h;
-							ref_img.channel = 4;
-							ref_img.data = rgba;
+							ref_img = rgba2ref(rgba, w, h);
 						}
 						if (ref_img.data)
 						{
@@ -2119,12 +2171,7 @@ void generation()
 						{
 							if (rimg.rgba && rimg.w > 0 && rimg.h > 0)
 							{
-								sd_image_t sdimg = {};
-								sdimg.width = rimg.w;
-								sdimg.height = rimg.h;
-								sdimg.channel = 4;
-								sdimg.data = rimg.rgba;
-								sd_reference_images.push_back(sdimg);
+								sd_reference_images.push_back(rgba2ref(rimg.rgba, rimg.w, rimg.h));
 							}
 						}
 					}
@@ -2159,6 +2206,10 @@ void generation()
 					else
 					{
 						final_errors = progress_errors;
+					}
+					for (auto& x : sd_reference_images)
+					{
+						free(x.data);
 					}
 				}
 				free_sd_ctx(sd_ctx);
@@ -2617,27 +2668,30 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
 				HMENU hImageModelMenu = CreatePopupMenu();
-				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE ? MF_CHECKED : 0), 1200, L"Z-Image");
-				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::FLUX2 ? MF_CHECKED : 0), 1201, L"Flux 2");
-				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5 ? MF_CHECKED : 0), 1202, L"Stable Diffusion 3.5");
-				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::QWEN_IMAGE ? MF_CHECKED : 0), 1203, L"Qwen image");
-				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::ERNIE_IMAGE ? MF_CHECKED : 0), 1204, L"Ernie image");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE_TURBO ? MF_CHECKED : 0), 1200, L"Z-Image Turbo");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE_BASE ? MF_CHECKED : 0), 1201, L"Z-Image Base");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::FLUX2_KLEIN_9B ? MF_CHECKED : 0), 1210, L"Flux 2 Klein 9B");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::FLUX2_KLEIN_4B ? MF_CHECKED : 0), 1211, L"Flux 2 Klein 4B");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::STABLE_DIFFUSION_3_5 ? MF_CHECKED : 0), 1220, L"Stable Diffusion 3.5");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::QWEN_IMAGE ? MF_CHECKED : 0), 1230, L"Qwen image");
+				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::ERNIE_IMAGE ? MF_CHECKED : 0), 1240, L"Ernie image");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hImageModelMenu, L"Image generation model...");
 
 				HMENU hEditModelMenu = CreatePopupMenu();
-				AppendMenu(hEditModelMenu, MF_STRING | (edit_model == EDIT_MODEL::FLUX2 ? MF_CHECKED : 0), 1500, L"Flux 2");
-				AppendMenu(hEditModelMenu, MF_STRING | (edit_model == EDIT_MODEL::QWEN_IMAGE_EDIT ? MF_CHECKED : 0), 1501, L"Qwen image edit");
+				AppendMenu(hEditModelMenu, MF_STRING | (edit_model == EDIT_MODEL::FLUX2_KLEIN_9B ? MF_CHECKED : 0), 1500, L"Flux 2 Klein 9B");
+				AppendMenu(hEditModelMenu, MF_STRING | (edit_model == EDIT_MODEL::FLUX2_KLEIN_4B ? MF_CHECKED : 0), 1501, L"Flux 2 Klein 4B");
+				AppendMenu(hEditModelMenu, MF_STRING | (edit_model == EDIT_MODEL::QWEN_IMAGE_EDIT ? MF_CHECKED : 0), 1510, L"Qwen image edit");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hEditModelMenu, L"Image edit model...");
 
 				HMENU hTextModelMenu = CreatePopupMenu();
 				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::QWEN_3_VL ? MF_CHECKED : 0), 1300, L"Qwen 3 VL");
-				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::GEMMA_4 ? MF_CHECKED : 0), 1301, L"Gemma 4");
+				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::GEMMA_4 ? MF_CHECKED : 0), 1310, L"Gemma 4");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hTextModelMenu, L"Text generation model...");
 
 				HMENU hVideoModelMenu = CreatePopupMenu();
 				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::WAN_2_2 ? MF_CHECKED : 0), 1400, L"Wan 2.2");
-				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::LTX_2_3 ? MF_CHECKED : 0), 1401, L"LTX 2.3");
-				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::MINIMAX_H3 ? MF_CHECKED : 0), 1402, L"Minimax H3");
+				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::LTX_2_3 ? MF_CHECKED : 0), 1410, L"LTX 2.3");
+				AppendMenu(hVideoModelMenu, MF_STRING | (video_model == VIDEO_MODEL::MINIMAX_H3 ? MF_CHECKED : 0), 1420, L"Minimax H3");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hVideoModelMenu, L"Video generation model...");
 
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
@@ -2730,39 +2784,45 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					batch_count = 16;
 				}
 				else if (selection == 1200) {
-					image_model = IMAGE_MODEL::Z_IMAGE;
+					image_model = IMAGE_MODEL::Z_IMAGE_TURBO;
 				}
 				else if (selection == 1201) {
-					image_model = IMAGE_MODEL::FLUX2;
+					image_model = IMAGE_MODEL::Z_IMAGE_BASE;
 				}
-				else if (selection == 1202) {
+				else if (selection == 1210) {
+					image_model = IMAGE_MODEL::FLUX2_KLEIN_9B;
+				}
+				else if (selection == 1211) {
+					image_model = IMAGE_MODEL::FLUX2_KLEIN_4B;
+				}
+				else if (selection == 1220) {
 					image_model = IMAGE_MODEL::STABLE_DIFFUSION_3_5;
 				}
-				else if (selection == 1203) {
+				else if (selection == 1230) {
 					image_model = IMAGE_MODEL::QWEN_IMAGE;
 				}
-				else if (selection == 1204) {
+				else if (selection == 1240) {
 					image_model = IMAGE_MODEL::ERNIE_IMAGE;
 				}
 				else if (selection == 1300) {
 					text_model = TEXT_MODEL::QWEN_3_VL;
 				}
-				else if (selection == 1301) {
+				else if (selection == 1310) {
 					text_model = TEXT_MODEL::GEMMA_4;
 				}
 				else if (selection == 1400) {
 					video_model = VIDEO_MODEL::WAN_2_2;
 				}
-				else if (selection == 1401) {
+				else if (selection == 1410) {
 					video_model = VIDEO_MODEL::LTX_2_3;
 				}
-				else if (selection == 1402) {
+				else if (selection == 1420) {
 					video_model = VIDEO_MODEL::MINIMAX_H3;
 				}
 				else if (selection == 1500) {
-					edit_model = EDIT_MODEL::FLUX2;
+					edit_model = EDIT_MODEL::FLUX2_KLEIN_9B;
 				}
-				else if (selection == 1501) {
+				else if (selection == 1510) {
 					edit_model = EDIT_MODEL::QWEN_IMAGE_EDIT;
 				}
 				else if (selection == 8000) // about

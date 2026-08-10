@@ -9,13 +9,13 @@ Made in C++ and WinAPI, no external dependencies.
  <img width="24%" src=".github/image4.png" align="right" />
  
 - Image generation: You simply type a text and the image will be generated.
-    - Z-Image Turbo
-    - Flux 2 Klein
+    - Z-Image (Turbo/Base)
+    - Flux 2 (Klein 4B/9B)
     - Stable Diffusion 3.5 Large
     - Qwen Image
     - ERNIE-Image Turbo
 - Image Editing: Edit the current image with a prompt and other reference images
-    - Flux 2 Klein
+    - Flux 2 (Klein 4B/9B)
     - Qwen Image Edit
 - Ask: enter a text and the AI will answer, also supports image if one is opened
     - Qwen 3 VL
