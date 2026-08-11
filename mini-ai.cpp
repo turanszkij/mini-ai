@@ -1017,7 +1017,7 @@ void generation()
 			ref.channel = 4;
 			ref.width = (uint32_t)in_w;
 			ref.height = (uint32_t)in_h;
-			if (in_w > w2 && in_h > h2)
+			if (in_w > w2 || in_h > h2)
 			{
 				// Rescale to not be greater than display area (generation resolution) while keeping aspect
 				const float src_aspect = (float)in_w / (float)in_h;
@@ -2821,6 +2821,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (selection == 1500) {
 					edit_model = EDIT_MODEL::FLUX2_KLEIN_9B;
+				}
+				else if (selection == 1501) {
+					edit_model = EDIT_MODEL::FLUX2_KLEIN_4B;
 				}
 				else if (selection == 1510) {
 					edit_model = EDIT_MODEL::QWEN_IMAGE_EDIT;
