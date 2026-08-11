@@ -2870,6 +2870,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				DestroyMenu(hMenu);
 				return 0;
 			}
+			break;
 		}
 
 		case WM_CTLCOLOREDIT:
@@ -3059,6 +3060,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				return TRUE;
 			}
 		}
+		// no break after WM_SETCURSOR by intention!
 
 		default:
 			return DefWindowProc(hWnd, message, wParam, lParam);
