@@ -1,5 +1,8 @@
-﻿#include <Windows.h>
+#include <Windows.h>
 #include <commdlg.h> // Common Dialogs for Load/Save
+
+#include <dxgi1_4.h>
+#pragma comment(lib, "dxgi.lib")
 
 #include <dwmapi.h> // DwmSetWindowAttribute
 #pragma comment(lib, "dwmapi.lib")
@@ -77,6 +80,7 @@
 
 #define IDI_APPICON 101
 #define IDT_ANIM 1001          // timer for lightweight generation activity animation
+#define IDT_MEM  1002          // timer for RAM/VRAM title bar refresh
 
 static wchar_t originalWorkingDir[MAX_PATH] = {}; // at application start the working directory is remembered and all file operations will be done based on that
 static wchar_t promptPath[MAX_PATH] = {}; // the absolute path of prompt.txt
@@ -226,16 +230,124 @@ void resize_window_to_image()
 	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
 	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
-void redraw()
+
+bool get_vram(uint64_t& vram_used, uint64_t& vram_total)
 {
-	wchar_t text[1024] = {};
-	if (is_generating.load())
+	static Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+	static bool factory_tried = false;
+
+	bool has_vram = false;
+
+	if (!factory_tried)
 	{
-		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx (%d%%)", w2, h2, progress);
+		factory_tried = true;
+		CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+	}
+
+	if (factory)
+	{
+		// Pick the discrete GPU with the most dedicated VRAM (skip software adapters)
+		Microsoft::WRL::ComPtr<IDXGIAdapter1> bestAdapter;
+		SIZE_T bestDedicated = 0;
+
+		for (UINT i = 0; ; ++i)
+		{
+			Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+			if (FAILED(factory->EnumAdapters1(i, &adapter)))
+				break;
+
+			DXGI_ADAPTER_DESC1 desc = {};
+			if (FAILED(adapter->GetDesc1(&desc)))
+				continue;
+
+			// Skip Microsoft Basic Render Driver / software adapters
+			if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+				continue;
+
+			if (desc.DedicatedVideoMemory > bestDedicated)
+			{
+				bestDedicated = desc.DedicatedVideoMemory;
+				bestAdapter = adapter;
+			}
+		}
+
+		if (bestAdapter)
+		{
+			Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
+			if (SUCCEEDED(bestAdapter.As(&adapter3)))
+			{
+				DXGI_QUERY_VIDEO_MEMORY_INFO localInfo = {};
+				if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &localInfo)))
+				{
+					vram_used = localInfo.CurrentUsage;
+					// Prefer the driver's reported budget; fall back to dedicated size from desc
+					vram_total = localInfo.Budget ? localInfo.Budget : bestDedicated;
+					if (vram_total == 0)
+						vram_total = bestDedicated;
+					has_vram = (vram_total > 0);
+				}
+			}
+
+			// Fallback if QueryVideoMemoryInfo is unavailable: still report dedicated VRAM size
+			if (!has_vram && bestDedicated > 0)
+			{
+				vram_total = bestDedicated;
+				has_vram = true;
+			}
+		}
+	}
+	return has_vram;
+}
+void get_memory_status_string(wchar_t* out, size_t out_chars)
+{
+	out[0] = 0;
+
+	static auto format_gib = [](wchar_t* buf, size_t buf_chars, unsigned long long bytes) {
+		double gib = (double)bytes / (1024.0 * 1024.0 * 1024.0);
+		_snwprintf(buf, buf_chars, L"%.1f", gib);
+	};
+
+	// --- System RAM ---
+	MEMORYSTATUSEX memInfo = {};
+	memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+	unsigned long long ram_total = 0, ram_used = 0;
+	if (GlobalMemoryStatusEx(&memInfo))
+	{
+		ram_total = memInfo.ullTotalPhys;
+		ram_used = ram_total - memInfo.ullAvailPhys;
+	}
+	wchar_t ram_used_s[32] = {}, ram_total_s[32] = {};
+	format_gib(ram_used_s, 32, ram_used);
+	format_gib(ram_total_s, 32, ram_total);
+
+	uint64_t vram_used = 0, vram_total = 0;
+	bool has_vram = get_vram(vram_used, vram_total);
+	if (has_vram && vram_total > 0)
+	{
+		wchar_t vram_used_s[32] = {}, vram_total_s[32] = {};
+		format_gib(vram_used_s, 32, vram_used);
+		format_gib(vram_total_s, 32, vram_total);
+		_snwprintf(out, out_chars, L"RAM %s/%s GB | VRAM %s/%s GB", ram_used_s, ram_total_s, vram_used_s, vram_total_s);
 	}
 	else
 	{
-		_snwprintf(text, sizeof(text), L"mini-ai %dx%dpx", w2, h2);
+		_snwprintf(out, out_chars, L"RAM %s/%s GB", ram_used_s, ram_total_s);
+	}
+}
+
+void redraw()
+{
+	wchar_t mem_status[128] = {};
+	get_memory_status_string(mem_status, 128);
+
+	wchar_t text[1024] = {};
+	if (is_generating.load())
+	{
+		_snwprintf(text, sizeof(text) / sizeof(wchar_t), L"mini-ai %dx%dpx (%d%%) | %s", w2, h2, progress, mem_status);
+	}
+	else
+	{
+		_snwprintf(text, sizeof(text) / sizeof(wchar_t), L"mini-ai %dx%dpx | %s", w2, h2, mem_status);
 	}
 	SetWindowText(window, text);
 
@@ -1467,6 +1579,15 @@ void generation()
 				prompt_file.close();
 			}
 
+			bool vram_small = true;
+			uint64_t vram_used = 0, vram_total = 0, vram_available = 0;
+			if (get_vram(vram_used, vram_total))
+			{
+				vram_available = vram_total - vram_used;
+				const uint64_t vram_small_threshold = 12ull * 1024ull * 1024ull * 1024ull;
+				vram_small = vram_available < vram_small_threshold;
+			}
+
 			wchar_t dll_dir[MAX_PATH] = {};
 			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/stable-diffusion", originalWorkingDir);
 			SetDllDirectory(dll_dir);
@@ -1578,7 +1699,8 @@ void generation()
 					EnsureModelExists(L"https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q3_K_M.gguf?download=true", diffusion_model_path);
 					EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors?download=true", clip_vision_model_path);
 
-					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+					if (vram_small)
+						sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 				else if (video_model == VIDEO_MODEL::LTX_2_3)
 				{
@@ -1595,7 +1717,8 @@ void generation()
 					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors?download=true", embeddings_connectors_path);
 					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/distilled-1.1/ltx-2.3-22b-distilled-1.1-Q3_K_M.gguf?download=true", diffusion_model_path);
 
-					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+					if (vram_small)
+						sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 				else if (video_model == VIDEO_MODEL::MINIMAX_H3)
 				{
@@ -1618,7 +1741,8 @@ void generation()
 						EnsureModelExists(L"https://huggingface.co/leejet/MiniMax-H3-GGUF/resolve/main/minimax_h3_ref2va_pruned-Q4_K_M.gguf?download=true", diffusion_model_path);
 					}
 
-					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+					if (vram_small)
+						sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 			}
 			else if (image_model == IMAGE_MODEL::FLUX2_KLEIN_9B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_9B))
@@ -1632,7 +1756,8 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/resolve/main/flux-2-klein-9b-Q4_K_M.gguf?download=true", diffusion_model_path);
 
-				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+				if (vram_small)
+					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 			else if (image_model == IMAGE_MODEL::FLUX2_KLEIN_4B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_4B))
 			{
@@ -1667,7 +1792,8 @@ void generation()
 					EnsureModelExists(L"https://huggingface.co/QuantStack/Qwen-Image-GGUF/resolve/main/Qwen_Image-Q4_K_M.gguf?download=true", diffusion_model_path);
 				}
 
-				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+				if (vram_small)
+					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 			else if (image_model == IMAGE_MODEL::Z_IMAGE_TURBO)
 			{
@@ -1721,7 +1847,8 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/t5xxl_fp8_e4m3fn.safetensors?download=true", t5xxl_path);
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/sd3.5_large-q4_1.gguf?download=true", diffusion_model_path);
 				
-				sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
+				if (vram_small)
+					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 
 			char u8_vae_path[MAX_PATH] = {};
@@ -2268,6 +2395,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		case WM_DESTROY:
 			exiting = true;
 			KillTimer(hWnd, IDT_ANIM);
+			KillTimer(hWnd, IDT_MEM);
 			clear_ref_images();
 			PostQuitMessage(0);
 			break;
@@ -2284,6 +2412,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					RECT r = { 0, 0, w2, h2 };
 					InvalidateRect(hWnd, &r, FALSE);
 				}
+			}
+			else if (wParam == IDT_MEM)
+			{
+				// Refresh RAM/VRAM numbers in the title bar without a full redraw
+				wchar_t mem_status[128] = {};
+				get_memory_status_string(mem_status, 128);
+				wchar_t text[1024] = {};
+				if (is_generating.load())
+					_snwprintf(text, sizeof(text) / sizeof(wchar_t), L"mini-ai %dx%dpx (%d%%) | %s", w2, h2, progress, mem_status);
+				else
+					_snwprintf(text, sizeof(text) / sizeof(wchar_t), L"mini-ai %dx%dpx | %s", w2, h2, mem_status);
+				SetWindowText(hWnd, text);
 			}
 			break;
 		case WM_ERASEBKGND:
@@ -3154,6 +3294,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	ShowWindow(window, SW_SHOWDEFAULT);
 	DragAcceptFiles(window, TRUE);
 
+	// Periodically refresh RAM/VRAM in the title bar (~1 Hz)
+	SetTimer(window, IDT_MEM, 1000, NULL);
+
 	BOOL darkmode = TRUE;
 	DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE, &darkmode, sizeof(darkmode));
 	SetWindowTheme(hBtnLoad, L"DarkMode_Explorer", NULL);
@@ -3195,16 +3338,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		SetWindowText(hEdit, L"A beautiful mountain landscape...");
 	}
 
-	while (!exiting)
+	MSG msg = {};
+	while (!exiting && GetMessage(&msg, NULL, 0, 0))
 	{
-		MSG msg = {};
-		if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-			if (!TranslateAccelerator(window, hAccel, &msg))
-			{
-				TranslateMessage(&msg);
-				DispatchMessage(&msg);
-			}
-			continue;
+		if (!TranslateAccelerator(window, hAccel, &msg))
+		{
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
 		}
 	}
 
