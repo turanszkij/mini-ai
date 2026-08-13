@@ -1411,10 +1411,7 @@ void generation()
 								if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) == 0)
 								{
 									llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-									llama_sampler_chain_add(smpl, llama_sampler_init_penalties(128, 1.1f, 0.0f, 0.0f));
-									llama_sampler_chain_add(smpl, llama_sampler_init_top_k(40));
-									llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.92f, 1));
-									llama_sampler_chain_add(smpl, llama_sampler_init_temp(0.85f));
+									llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
 									llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : uint32_t(seed)));
 
 									llama_token new_token_id;
