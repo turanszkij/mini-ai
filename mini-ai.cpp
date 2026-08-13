@@ -87,7 +87,7 @@ static wchar_t promptPath[MAX_PATH] = {}; // the absolute path of prompt.txt
 static int w = 512, h = 512, c = 3; // properties of the current image
 static unsigned char* rgba = nullptr; // byte data of current image
 static unsigned char* rgba2 = nullptr; // byte data of current image's scaled version (aspect-preserved fit)
-static int w2, h2; // size of the image display area (from window client)
+static int w2 = 512, h2 = 512; // size of the image display area (from window client) — also the generation resolution
 static int disp_w = 0, disp_h = 0; // actual size of the scaled display image (aspect preserved, maximized)
 static int batch_count = 1;// number of images to generate
 static int video_fps = 24; // video generation frames per second
@@ -226,6 +226,8 @@ static const int max_history_count = 100;
 
 void resize_window_to_image()
 {
+	if (window && IsZoomed(window))
+		return;
 	RECT rc = { 0, 0, w, h + get_ref_container_height() + splitter_thickness + button_height + text_height};
 	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
 	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
@@ -422,9 +424,12 @@ void redraw()
 	if (hBtnRedo)		MoveWindow(hBtnRedo, button_height * 5, y, button_height, button_height, TRUE);
 	if (hBtnGenerate)	MoveWindow(hBtnGenerate, button_height * 6, y, w2 - (button_height * 6), button_height, TRUE);
 
-	RECT rc = { 0, 0, w2, h2 + get_ref_container_height() + splitter_thickness + text_height + button_height };
-	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
-	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+	if (window && (!IsZoomed(window) || resize_fixed))
+	{
+		RECT rc = { 0, 0, w2, h2 + get_ref_container_height() + splitter_thickness + text_height + button_height };
+		AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
+		SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+	}
 	InvalidateRect(window, NULL, TRUE);
 	UpdateWindow(window);
 }
@@ -2378,6 +2383,24 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	InitializeCriticalSection(&image_cs);
 	CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
+	// Load settings from registry (generation resolution + textbox height)
+	{
+		HKEY hKey = nullptr;
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\mini-ai", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+		{
+			DWORD val = 0, size = sizeof(val), type = 0;
+			if (RegQueryValueExW(hKey, L"GenWidth", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD && val >= 64 && val <= 8192)
+				w2 = (int)val;
+			size = sizeof(val);
+			if (RegQueryValueExW(hKey, L"GenHeight", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD && val >= 64 && val <= 8192)
+				h2 = (int)val;
+			size = sizeof(val);
+			if (RegQueryValueExW(hKey, L"TextHeight", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD && val >= 40 && val <= 800)
+				text_height = (int)val;
+			RegCloseKey(hKey);
+		}
+	}
+
 	static bool exiting = false;
 	static auto WndProc = [](HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
 		switch (message)
@@ -2396,6 +2419,24 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			exiting = true;
 			KillTimer(hWnd, IDT_ANIM);
 			KillTimer(hWnd, IDT_MEM);
+			// Save settings to registry
+			{
+				HKEY hKey = nullptr;
+				if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\mini-ai", 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
+				{
+					DWORD val = (DWORD)w2;
+					RegSetValueExW(hKey, L"GenWidth", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+					val = (DWORD)h2;
+					RegSetValueExW(hKey, L"GenHeight", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+					val = (DWORD)text_height;
+					RegSetValueExW(hKey, L"TextHeight", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+					WINDOWPLACEMENT wp = {};
+					wp.length = sizeof(wp);
+					if (GetWindowPlacement(hWnd, &wp))
+						RegSetValueExW(hKey, L"WindowPlacement", 0, REG_BINARY, (const BYTE*)&wp, sizeof(wp));
+					RegCloseKey(hKey);
+				}
+			}
 			clear_ref_images();
 			PostQuitMessage(0);
 			break;
@@ -3224,13 +3265,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	wcex.hIconSm = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APPICON));
 	RegisterClassEx(&wcex);
 
-	RECT wr = { 0, 0, w, h + get_ref_container_height() + splitter_thickness + text_height + button_height };
-	DWORD window_style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+	RECT wr = { 0, 0, w2, h2 + get_ref_container_height() + splitter_thickness + text_height + button_height };
+	DWORD window_style = WS_OVERLAPPEDWINDOW;
 	AdjustWindowRect(&wr, window_style, FALSE);
 	int window_width = wr.right - wr.left;
 	int window_height = wr.bottom - wr.top;
 
 	window = CreateWindow(L"mini-ai", L"mini-ai", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, window_width, window_height, nullptr, nullptr, NULL, nullptr);
+
 	hEdit = CreateWindow(L"EDIT", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL, 0, 0, 0, 0, window, NULL, hInstance, NULL);
 
 	hBtnLoad = CreateWindow(L"BUTTON", L"\xE8B7", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 0, 0, window, (HMENU)IDC_LOAD_BUTTON, hInstance, NULL);
@@ -3291,7 +3333,45 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 	update_undo_redo_states();
 
-	ShowWindow(window, SW_SHOWDEFAULT);
+	// Restore window position / maximized state after children exist so WM_SIZE can layout them
+	bool placement_applied = false;
+	{
+		HKEY hKey = nullptr;
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\mini-ai", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+		{
+			WINDOWPLACEMENT wp = {};
+			DWORD size = sizeof(wp), type = 0;
+			if (RegQueryValueExW(hKey, L"WindowPlacement", nullptr, &type, (BYTE*)&wp, &size) == ERROR_SUCCESS && type == REG_BINARY && size == sizeof(wp) && wp.length == sizeof(wp))
+			{
+				int screenL = GetSystemMetrics(SM_XVIRTUALSCREEN);
+				int screenT = GetSystemMetrics(SM_YVIRTUALSCREEN);
+				int screenR = screenL + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+				int screenB = screenT + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+				RECT& r = wp.rcNormalPosition;
+				if (r.right > screenL && r.left < screenR && r.bottom > screenT && r.top < screenB)
+				{
+					// Keep maximized if that was the last state; otherwise normal
+					if (wp.showCmd == SW_SHOWMINIMIZED)
+						wp.showCmd = SW_SHOWNORMAL;
+					else if (wp.showCmd != SW_SHOWMAXIMIZED)
+						wp.showCmd = SW_SHOWNORMAL;
+					SetWindowPlacement(window, &wp);
+					placement_applied = true;
+				}
+			}
+			RegCloseKey(hKey);
+		}
+	}
+
+	// SW_SHOWDEFAULT can undo maximized state from SetWindowPlacement — avoid it when placement was applied
+	if (placement_applied)
+		ShowWindow(window, SW_SHOW);
+	else
+		ShowWindow(window, SW_SHOWDEFAULT);
+
+	// Ensure children are laid out (placement's WM_SIZE may have run before fonts/tooltips; redraw is safe now)
+	redraw();
+
 	DragAcceptFiles(window, TRUE);
 
 	// Periodically refresh RAM/VRAM in the title bar (~1 Hz)
