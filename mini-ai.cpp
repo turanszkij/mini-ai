@@ -100,6 +100,8 @@ static bool is_dragging = false; // separator dragging
 static int progress = 0; // progress of current processing task
 static int download_total_MB = 0; // current total model download size megabytes
 static int download_completed_MB = 0; // current model download completed megabytes
+static bool offload_to_cpu = false; // keep parameters offloaded to CPU (can help with out of memory)
+static bool is_text_encode_cpu = false; // cpu or gpu execution preference for text encode phase (can help with out of memory)
 static bool is_cpu = false; // cpu or gpu execution preference
 static bool resize_fixed = false; // fix for WM_SIZE overriding a resize operation
 static std::atomic_bool is_generating{ false }; // true when background thread is running generation task
@@ -1581,15 +1583,6 @@ void generation()
 				prompt_file.close();
 			}
 
-			bool vram_small = true;
-			uint64_t vram_used = 0, vram_total = 0, vram_available = 0;
-			if (get_vram(vram_used, vram_total))
-			{
-				vram_available = vram_total - vram_used;
-				const uint64_t vram_small_threshold = 12ull * 1024ull * 1024ull * 1024ull;
-				vram_small = vram_available < vram_small_threshold;
-			}
-
 			wchar_t dll_dir[MAX_PATH] = {};
 			_snwprintf(dll_dir, MAX_PATH, L"%s/lib/stable-diffusion", originalWorkingDir);
 			SetDllDirectory(dll_dir);
@@ -1700,9 +1693,6 @@ void generation()
 					EnsureModelExists(L"https://huggingface.co/city96/umt5-xxl-encoder-gguf/resolve/main/umt5-xxl-encoder-Q3_K_M.gguf?download=true", t5xxl_path);
 					EnsureModelExists(L"https://huggingface.co/QuantStack/Wan2.2-TI2V-5B-GGUF/resolve/main/Wan2.2-TI2V-5B-Q3_K_M.gguf?download=true", diffusion_model_path);
 					EnsureModelExists(L"https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors?download=true", clip_vision_model_path);
-
-					if (vram_small)
-						sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 				else if (video_model == VIDEO_MODEL::LTX_2_3)
 				{
@@ -1718,9 +1708,6 @@ void generation()
 					EnsureModelExists(L"https://huggingface.co/unsloth/gemma-3-12b-it-qat-GGUF/resolve/main/gemma-3-12b-it-qat-UD-Q4_K_XL.gguf?download=true", text_encoder_path);
 					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors?download=true", embeddings_connectors_path);
 					EnsureModelExists(L"https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main/distilled-1.1/ltx-2.3-22b-distilled-1.1-Q3_K_M.gguf?download=true", diffusion_model_path);
-
-					if (vram_small)
-						sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 				else if (video_model == VIDEO_MODEL::MINIMAX_H3)
 				{
@@ -1742,9 +1729,6 @@ void generation()
 						_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/minimax_h3_ref2va_pruned-Q4_K_M.gguf");
 						EnsureModelExists(L"https://huggingface.co/leejet/MiniMax-H3-GGUF/resolve/main/minimax_h3_ref2va_pruned-Q4_K_M.gguf?download=true", diffusion_model_path);
 					}
-
-					if (vram_small)
-						sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 				}
 			}
 			else if (image_model == IMAGE_MODEL::FLUX2_KLEIN_9B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_9B))
@@ -1757,9 +1741,6 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/FLUX.2-klein-9B-GGUF/resolve/main/flux-2-klein-9b-Q4_K_M.gguf?download=true", diffusion_model_path);
-
-				if (vram_small)
-					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 			else if (image_model == IMAGE_MODEL::FLUX2_KLEIN_4B || (mode == MODE::IMAGE_EDIT && edit_model == EDIT_MODEL::FLUX2_KLEIN_4B))
 			{
@@ -1793,9 +1774,6 @@ void generation()
 					_snwprintf(diffusion_model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen_Image-Q4_K_M.gguf");
 					EnsureModelExists(L"https://huggingface.co/QuantStack/Qwen-Image-GGUF/resolve/main/Qwen_Image-Q4_K_M.gguf?download=true", diffusion_model_path);
 				}
-
-				if (vram_small)
-					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 			else if (image_model == IMAGE_MODEL::Z_IMAGE_TURBO)
 			{
@@ -1818,8 +1796,6 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors?download=true", vae_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf?download=true", text_encoder_path);
 				EnsureModelExists(L"https://huggingface.co/unsloth/Z-Image-GGUF/resolve/main/z-image-Q4_K_M.gguf?download=true", diffusion_model_path);
-
-				sd_params.backend = "cpu"; // doesn't work on GPU now, has some issue
 			}
 			else if (image_model == IMAGE_MODEL::ERNIE_IMAGE)
 			{
@@ -1848,9 +1824,6 @@ void generation()
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/clip_g.safetensors?download=true", clip_g_model_path);
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/t5xxl_fp8_e4m3fn.safetensors?download=true", t5xxl_path);
 				EnsureModelExists(L"https://huggingface.co/calcuis/sd3.5-large-gguf/resolve/main/sd3.5_large-q4_1.gguf?download=true", diffusion_model_path);
-				
-				if (vram_small)
-					sd_params.backend = "te=cpu"; // fix for out of memory on 8GB GPU
 			}
 
 			char u8_vae_path[MAX_PATH] = {};
@@ -1899,11 +1872,18 @@ void generation()
 			//sd_params.backend = "te=cpu"; // text encode on CPU
 			//sd_params.backend = "vae=cpu"; // VAE decode on CPU
 			//sd_params.backend = "controlnet=cpu"; // control net processing on CPU
+			if (is_text_encode_cpu)
+			{
+				sd_params.backend = "te=cpu";
+			}
 			if (is_cpu)
 			{
 				sd_params.backend = "cpu"; // fully runs on CPU (slow)
 			}
-			sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
+			if (offload_to_cpu)
+			{
+				sd_params.params_backend = "*=cpu"; // --offload-to-cpu param in the command line tool, allows larger models in small vram by offloading model to CPU RAM, but can still use the GPU for generation
+			}
 
 			sd_ctx = new_sd_ctx(&sd_params);
 			if (sd_ctx != nullptr)
@@ -1956,7 +1936,7 @@ void generation()
 					else if (video_model == VIDEO_MODEL::MINIMAX_H3)
 					{
 						vid_params.sample_params.sample_method = EULER_SAMPLE_METHOD;
-						vid_params.sample_params.sample_steps = 16;
+						vid_params.sample_params.sample_steps = 25;
 						vid_params.sample_params.scheduler = SIMPLE_SCHEDULER;
 						vid_params.sample_params.eta = 0.0f;
 						vid_params.sample_params.flow_shift = 12.0f;
@@ -2388,12 +2368,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			DWORD val = 0, size = sizeof(val), type = 0;
 			if (RegQueryValueExW(hKey, L"GenWidth", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD && val >= 64 && val <= 8192)
 				w2 = (int)val;
-			size = sizeof(val);
 			if (RegQueryValueExW(hKey, L"GenHeight", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD && val >= 64 && val <= 8192)
 				h2 = (int)val;
-			size = sizeof(val);
 			if (RegQueryValueExW(hKey, L"TextHeight", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD && val >= 40 && val <= 800)
 				text_height = (int)val;
+			if (RegQueryValueExW(hKey, L"OffloadToCPU", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD)
+				offload_to_cpu = val == 0 ? false : true;
+			if (RegQueryValueExW(hKey, L"TextEncodeCPU", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD)
+				is_text_encode_cpu = val == 0 ? false : true;
+			if (RegQueryValueExW(hKey, L"UseCPU", nullptr, &type, (BYTE*)&val, &size) == ERROR_SUCCESS && type == REG_DWORD)
+				is_cpu = val == 0 ? false : true;
 			RegCloseKey(hKey);
 		}
 	}
@@ -2427,6 +2411,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					RegSetValueExW(hKey, L"GenHeight", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
 					val = (DWORD)text_height;
 					RegSetValueExW(hKey, L"TextHeight", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+					val = offload_to_cpu ? 1 : 0;
+					RegSetValueExW(hKey, L"OffloadToCPU", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+					val = is_text_encode_cpu ? 1 : 0;
+					RegSetValueExW(hKey, L"TextEncodeCPU", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+					val = is_cpu ? 1 : 0;
+					RegSetValueExW(hKey, L"UseCPU", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
 					WINDOWPLACEMENT wp = {};
 					wp.length = sizeof(wp);
 					if (GetWindowPlacement(hWnd, &wp))
@@ -2833,8 +2823,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
 				}
-				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1103, L"Use CPU (slow)");
-				AppendMenu(hMenu, MF_STRING, 1104, L"Open output folder");
+				AppendMenu(hMenu, MF_STRING | (offload_to_cpu ? MF_CHECKED : 0), 1103, L"Offload params to CPU");
+				AppendMenu(hMenu, MF_STRING | (is_text_encode_cpu ? MF_CHECKED : 0), 1104, L"Use CPU for text encode (slow)");
+				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1105, L"Use CPU (slow)");
+				AppendMenu(hMenu, MF_STRING, 1106, L"Open output folder");
 
 				HMENU hBatchCountMenu = CreatePopupMenu();
 				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 1 ? MF_CHECKED : 0), 1111, L"1");
@@ -2941,10 +2933,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				else if (selection == 1102) { // Paste as reference
 					paste_image(true);
 				}
-				else if (selection == 1103) { // CPU
+				else if (selection == 1103) {
+					offload_to_cpu = !offload_to_cpu;
+				}
+				else if (selection == 1104) {
+					is_text_encode_cpu = !is_text_encode_cpu;
+				}
+				else if (selection == 1105) {
 					is_cpu = !is_cpu;
 				}
-				else if (selection == 1104) { // output folder
+				else if (selection == 1106) { // output folder
 					wchar_t output_path[MAX_PATH] = {};
 					_snwprintf(output_path, MAX_PATH, L"%s/output/", originalWorkingDir);
 					ShellExecute(NULL, L"open", output_path, NULL, NULL, SW_SHOWNORMAL);
@@ -3331,6 +3329,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	update_undo_redo_states();
 
 	// Restore window position / maximized state after children exist so WM_SIZE can layout them
+	resize_fixed = true;
 	bool placement_applied = false;
 	{
 		HKEY hKey = nullptr;
@@ -3359,6 +3358,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			RegCloseKey(hKey);
 		}
 	}
+	resize_fixed = false;
 
 	// SW_SHOWDEFAULT can undo maximized state from SetWindowPlacement — avoid it when placement was applied
 	if (placement_applied)
