@@ -1,4 +1,4 @@
-#include <Windows.h>
+﻿#include <Windows.h>
 #include <commdlg.h> // Common Dialogs for Load/Save
 
 #include <dxgi1_4.h>
@@ -2823,10 +2823,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				{
 					AppendMenu(hMenu, MF_STRING, 1102, L"Paste as reference image");
 				}
-				AppendMenu(hMenu, MF_STRING | (offload_to_cpu ? MF_CHECKED : 0), 1103, L"Offload params to CPU");
-				AppendMenu(hMenu, MF_STRING | (is_text_encode_cpu ? MF_CHECKED : 0), 1104, L"Use CPU for text encode (slow)");
-				AppendMenu(hMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1105, L"Use CPU (slow)");
-				AppendMenu(hMenu, MF_STRING, 1106, L"Open output folder");
+				AppendMenu(hMenu, MF_STRING, 1103, L"Open output folder");
+
+				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+				HMENU hCPUMenu = CreatePopupMenu();
+				AppendMenu(hCPUMenu, MF_STRING | (offload_to_cpu ? MF_CHECKED : 0), 1104, L"Offload params to CPU");
+				AppendMenu(hCPUMenu, MF_STRING | (is_text_encode_cpu ? MF_CHECKED : 0), 1105, L"Use CPU for text encode (slow)");
+				AppendMenu(hCPUMenu, MF_STRING | (is_cpu ? MF_CHECKED : 0), 1106, L"Use CPU for everything (very slow)");
+				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hCPUMenu, L"CPU Options...");
 
 				HMENU hBatchCountMenu = CreatePopupMenu();
 				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 1 ? MF_CHECKED : 0), 1111, L"1");
@@ -2834,8 +2839,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 8 ? MF_CHECKED : 0), 1113, L"8");
 				AppendMenu(hBatchCountMenu, MF_STRING | (batch_count == 16 ? MF_CHECKED : 0), 1114, L"16");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hBatchCountMenu, L"Batch  count...");
-
-				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
 				HMENU hImageModelMenu = CreatePopupMenu();
 				AppendMenu(hImageModelMenu, MF_STRING | (image_model == IMAGE_MODEL::Z_IMAGE_TURBO ? MF_CHECKED : 0), 1200, L"Z-Image Turbo");
@@ -2933,19 +2936,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				else if (selection == 1102) { // Paste as reference
 					paste_image(true);
 				}
-				else if (selection == 1103) {
-					offload_to_cpu = !offload_to_cpu;
-				}
-				else if (selection == 1104) {
-					is_text_encode_cpu = !is_text_encode_cpu;
-				}
-				else if (selection == 1105) {
-					is_cpu = !is_cpu;
-				}
-				else if (selection == 1106) { // output folder
+				else if (selection == 1103) { // output folder
 					wchar_t output_path[MAX_PATH] = {};
 					_snwprintf(output_path, MAX_PATH, L"%s/output/", originalWorkingDir);
 					ShellExecute(NULL, L"open", output_path, NULL, NULL, SW_SHOWNORMAL);
+				}
+				else if (selection == 1104) {
+					offload_to_cpu = !offload_to_cpu;
+				}
+				else if (selection == 1105) {
+					is_text_encode_cpu = !is_text_encode_cpu;
+				}
+				else if (selection == 1106) {
+					is_cpu = !is_cpu;
 				}
 				else if (selection == 1111) {
 					batch_count = 1;
