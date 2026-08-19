@@ -2,7 +2,9 @@
 #include <commdlg.h> // Common Dialogs for Load/Save
 
 #include <dxgi1_4.h>
+#include <d3d11.h>
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "d3d11.lib")
 
 #include <dwmapi.h> // DwmSetWindowAttribute
 #pragma comment(lib, "dwmapi.lib")
@@ -25,9 +27,11 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
+#include <mfmediaengine.h>
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mfreadwrite.lib")
 #pragma comment(lib, "mfuuid.lib")
+#pragma comment(lib, "oleaut32.lib")
 
 #include <thread>
 #include <string>
@@ -189,6 +193,398 @@ int get_ref_container_height()
 	return 0;
 }
 
+// video player stuff
+#define IDT_VIDEO 1003
+static Microsoft::WRL::ComPtr<IMFMediaEngine> g_mediaEngine;
+static Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> g_dxgiManager;
+static bool has_video = false;
+static bool video_playing = false;
+static bool video_paused = false;
+static bool video_ready = false; // LOADEDDATA / CANPLAY received
+static bool video_autoplay = false;
+static bool video_need_resize = false; // resize window to native video size once ready
+static std::wstring current_video_path;
+static unsigned char* video_frame_rgba = nullptr; // BGRA top-down for paint
+static int video_frame_w = 0, video_frame_h = 0;
+static CRITICAL_SECTION video_cs;
+static bool video_cs_inited = false;
+static Microsoft::WRL::ComPtr<ID3D11Device> g_d3dDevice;
+static Microsoft::WRL::ComPtr<ID3D11DeviceContext> g_d3dContext;
+static Microsoft::WRL::ComPtr<ID3D11Texture2D> g_videoTex;
+static Microsoft::WRL::ComPtr<ID3D11Texture2D> g_stagingTex;
+static int g_texW = 0, g_texH = 0;
+static UINT g_dxgiResetToken = 0;
+static RECT btn_play_rect = {}, btn_pause_rect = {}, btn_stop_rect = {};
+static RECT video_seek_rect = {};
+static bool video_seeking = false; // user is dragging the seek thumb
+static double video_seek_preview = -1.0; // preview time while dragging (-1 = none)
+static const int VIDEO_CTRL_H = 36;
+static const int VIDEO_SEEK_H = 6;
+static const int VIDEO_SEEK_HIT = 16; // taller hit area than visual track
+
+class MediaEngineNotify : public IMFMediaEngineNotify
+{
+	long m_ref = 1;
+public:
+	STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
+	{
+		if (riid == __uuidof(IUnknown) || riid == __uuidof(IMFMediaEngineNotify))
+		{
+			*ppv = static_cast<IMFMediaEngineNotify*>(this);
+			AddRef();
+			return S_OK;
+		}
+		*ppv = nullptr;
+		return E_NOINTERFACE;
+	}
+	STDMETHODIMP_(ULONG) AddRef() override { return InterlockedIncrement(&m_ref); }
+	STDMETHODIMP_(ULONG) Release() override
+	{
+		long r = InterlockedDecrement(&m_ref);
+		if (r == 0) delete this;
+		return r;
+	}
+	STDMETHODIMP EventNotify(DWORD event, DWORD_PTR param1, DWORD param2) override
+	{
+		switch (event)
+		{
+		case MF_MEDIA_ENGINE_EVENT_LOADEDDATA:
+		case MF_MEDIA_ENGINE_EVENT_CANPLAY:
+			video_ready = true;
+			if (window) PostMessage(window, WM_APP + 2, 0, 0);
+			break;
+		case MF_MEDIA_ENGINE_EVENT_PLAY:
+			video_playing = true; video_paused = false;
+			if (window) PostMessage(window, WM_APP + 3, 0, 0);
+			break;
+		case MF_MEDIA_ENGINE_EVENT_PAUSE:
+			video_playing = false; video_paused = true;
+			if (window) PostMessage(window, WM_APP + 3, 0, 0);
+			break;
+		case MF_MEDIA_ENGINE_EVENT_ENDED:
+			video_playing = false; video_paused = false;
+			if (window) PostMessage(window, WM_APP + 3, 0, 0);
+			break;
+		case MF_MEDIA_ENGINE_EVENT_ERROR:
+			video_playing = false; video_paused = false; video_ready = false;
+			if (window) PostMessage(window, WM_APP + 3, 0, 0);
+			break;
+		}
+		return S_OK;
+	}
+};
+static MediaEngineNotify* g_notify = nullptr;
+
+void clear_video_player()
+{
+	if (window) KillTimer(window, IDT_VIDEO);
+	if (g_mediaEngine)
+	{
+		g_mediaEngine->Shutdown();
+		g_mediaEngine.Reset();
+	}
+	// Keep D3D device / DXGI manager alive for next video
+	has_video = false;
+	video_playing = false;
+	video_paused = false;
+	video_ready = false;
+	video_autoplay = false;
+	video_need_resize = false;
+	video_seeking = false;
+	video_seek_preview = -1.0;
+	current_video_path.clear();
+	g_videoTex.Reset();
+	g_stagingTex.Reset();
+	g_texW = g_texH = 0;
+	if (video_cs_inited)
+	{
+		EnterCriticalSection(&video_cs);
+		if (video_frame_rgba) { free(video_frame_rgba); video_frame_rgba = nullptr; }
+		video_frame_w = video_frame_h = 0;
+		LeaveCriticalSection(&video_cs);
+	}
+	if (window) InvalidateRect(window, NULL, TRUE);
+}
+bool ensure_d3d()
+{
+	if (g_d3dDevice) return true;
+	D3D_FEATURE_LEVEL level;
+	UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+	HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr, 0,
+		D3D11_SDK_VERSION, &g_d3dDevice, &level, &g_d3dContext);
+	if (FAILED(hr))
+	{
+		hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0,
+			D3D11_SDK_VERSION, &g_d3dDevice, &level, &g_d3dContext);
+	}
+	if (FAILED(hr) || !g_d3dDevice) return false;
+
+	// Required for Media Engine / multi-threaded access
+	Microsoft::WRL::ComPtr<ID3D10Multithread> mt;
+	if (SUCCEEDED(g_d3dDevice.As(&mt)))
+		mt->SetMultithreadProtected(TRUE);
+
+	hr = MFCreateDXGIDeviceManager(&g_dxgiResetToken, &g_dxgiManager);
+	if (FAILED(hr)) return false;
+	hr = g_dxgiManager->ResetDevice(g_d3dDevice.Get(), g_dxgiResetToken);
+	return SUCCEEDED(hr);
+}
+bool ensure_textures(int w, int h)
+{
+	if (!ensure_d3d()) return false;
+	if (g_videoTex && g_texW == w && g_texH == h) return true;
+	g_videoTex.Reset();
+	g_stagingTex.Reset();
+	g_texW = w; g_texH = h;
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = w;
+	desc.Height = h;
+	desc.MipLevels = 1;
+	desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+	HRESULT hr = g_d3dDevice->CreateTexture2D(&desc, nullptr, &g_videoTex);
+	if (FAILED(hr)) return false;
+
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	hr = g_d3dDevice->CreateTexture2D(&desc, nullptr, &g_stagingTex);
+	return SUCCEEDED(hr);
+}
+bool init_media_engine()
+{
+	if (g_mediaEngine) return true;
+	if (!video_cs_inited)
+	{
+		InitializeCriticalSection(&video_cs);
+		video_cs_inited = true;
+	}
+	if (!ensure_d3d()) return false;
+
+	HRESULT hr = MFStartup(MF_VERSION);
+	if (FAILED(hr)) return false;
+
+	Microsoft::WRL::ComPtr<IMFMediaEngineClassFactory> factory;
+	hr = CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+	if (FAILED(hr)) return false;
+
+	Microsoft::WRL::ComPtr<IMFAttributes> attrs;
+	hr = MFCreateAttributes(&attrs, 3);
+	if (FAILED(hr)) return false;
+
+	g_notify = new MediaEngineNotify();
+	hr = attrs->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, g_notify);
+	if (FAILED(hr)) { g_notify->Release(); g_notify = nullptr; return false; }
+
+	// Share our D3D device with the Media Engine (required for TransferVideoFrame)
+	hr = attrs->SetUnknown(MF_MEDIA_ENGINE_DXGI_MANAGER, g_dxgiManager.Get());
+	if (FAILED(hr)) return false;
+
+	attrs->SetUINT32(MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM);
+
+	// Frame-server mode (0) so we pull frames with TransferVideoFrame
+	hr = factory->CreateInstance(0, attrs.Get(), &g_mediaEngine);
+	return SUCCEEDED(hr) && g_mediaEngine;
+}
+bool load_video_file(const wchar_t* path, bool fit_window = true)
+{
+	if (!path || !path[0]) return false;
+	if (!init_media_engine()) return false;
+
+	if (g_mediaEngine)
+	{
+		g_mediaEngine->Pause();
+		g_mediaEngine->SetCurrentTime(0.0);
+	}
+
+	video_ready = false;
+	video_autoplay = false;
+	// Only resize for new opens (drag-drop / generate) — not for undo/redo, matching images
+	video_need_resize = fit_window;
+	video_playing = false;
+	video_paused = false;
+
+	// Prefer file:/// URL — more reliable for local paths with Media Engine
+	std::wstring url;
+	if (wcsncmp(path, L"file:", 5) == 0 || wcsncmp(path, L"http", 4) == 0)
+	{
+		url = path;
+	}
+	else
+	{
+		url = L"file:///";
+		for (const wchar_t* p = path; *p; ++p)
+		{
+			if (*p == L'\\') url += L'/';
+			else url += *p;
+		}
+	}
+	BSTR bstr = SysAllocString(url.c_str());
+	if (!bstr) return false;
+	HRESULT hr = g_mediaEngine->SetSource(bstr);
+	SysFreeString(bstr);
+	if (FAILED(hr)) return false;
+
+	hr = g_mediaEngine->Load();
+	if (FAILED(hr)) return false;
+
+	current_video_path = path;
+	has_video = true;
+	if (window) SetTimer(window, IDT_VIDEO, 33, NULL); // ~30 fps transfer
+	return true;
+}
+void video_play()
+{
+	if (!g_mediaEngine || !has_video) return;
+	if (video_ready)
+	{
+		g_mediaEngine->Play();
+		video_playing = true;
+		video_paused = false;
+	}
+	else
+	{
+		// Play as soon as LOADEDDATA arrives
+		video_autoplay = true;
+	}
+}
+void video_pause()
+{
+	if (g_mediaEngine && has_video)
+	{
+		g_mediaEngine->Pause();
+		video_playing = false;
+		video_paused = true;
+		video_autoplay = false;
+	}
+}
+void video_stop()
+{
+	if (g_mediaEngine && has_video)
+	{
+		g_mediaEngine->Pause();
+		g_mediaEngine->SetCurrentTime(0.0);
+		video_playing = false;
+		video_paused = false;
+		video_autoplay = false;
+		video_seek_preview = -1.0;
+		if (window) InvalidateRect(window, NULL, FALSE);
+	}
+}
+double video_get_duration()
+{
+	if (!g_mediaEngine || !has_video) return 0.0;
+	double d = g_mediaEngine->GetDuration();
+	if (d <= 0.0 || d != d) return 0.0; // NaN / unknown
+	return d;
+}
+double video_get_current_time()
+{
+	if (!g_mediaEngine || !has_video) return 0.0;
+	if (video_seeking && video_seek_preview >= 0.0) return video_seek_preview;
+	double t = g_mediaEngine->GetCurrentTime();
+	if (t < 0.0 || t != t) return 0.0;
+	return t;
+}
+void video_seek_to(double t)
+{
+	if (!g_mediaEngine || !has_video) return;
+	double d = video_get_duration();
+	if (d > 0.0)
+	{
+		if (t < 0.0) t = 0.0;
+		if (t > d) t = d;
+	}
+	else if (t < 0.0) t = 0.0;
+	g_mediaEngine->SetCurrentTime(t);
+}
+void video_seek_from_x(int mouse_x)
+{
+	double d = video_get_duration();
+	if (d <= 0.0) return;
+	int left = video_seek_rect.left;
+	int width = video_seek_rect.right - video_seek_rect.left;
+	if (width < 1) return;
+	float u = (float)(mouse_x - left) / (float)width;
+	if (u < 0.f) u = 0.f;
+	if (u > 1.f) u = 1.f;
+	video_seek_preview = u * d;
+	video_seek_to(video_seek_preview);
+}
+void transfer_video_frame()
+{
+	if (!g_mediaEngine || !has_video) return;
+
+	// Only transfer when a new frame is available
+	LONGLONG pts = 0;
+	HRESULT tickHr = g_mediaEngine->OnVideoStreamTick(&pts);
+	if (tickHr != S_OK) return; // S_FALSE = no new frame
+
+	DWORD nw = 0, nh = 0;
+	g_mediaEngine->GetNativeVideoSize(&nw, &nh);
+	if (nw == 0 || nh == 0) return;
+
+	// Keep native resolution in w/h (same role as image pixel size)
+	if ((int)nw != w || (int)nh != h)
+	{
+		w = (int)nw;
+		h = (int)nh;
+	}
+
+	// Keep native resolution; paint scales to the window the same way as still images
+	int tw = (int)nw, th = (int)nh;
+	if (tw < 1) tw = 1; if (th < 1) th = 1;
+
+	if (!ensure_textures(tw, th)) return;
+
+	MFVideoNormalizedRect src = { 0.f, 0.f, 1.f, 1.f };
+	RECT dst = { 0, 0, tw, th };
+	MFARGB border = { 0, 0, 0, 0 };
+	HRESULT hr = g_mediaEngine->TransferVideoFrame(g_videoTex.Get(), &src, &dst, &border);
+	if (FAILED(hr)) return;
+
+	g_d3dContext->CopyResource(g_stagingTex.Get(), g_videoTex.Get());
+	D3D11_MAPPED_SUBRESOURCE mapped = {};
+	if (FAILED(g_d3dContext->Map(g_stagingTex.Get(), 0, D3D11_MAP_READ, 0, &mapped))) return;
+
+	EnterCriticalSection(&video_cs);
+	if (video_frame_rgba && (video_frame_w != tw || video_frame_h != th))
+	{
+		free(video_frame_rgba);
+		video_frame_rgba = nullptr;
+	}
+	if (!video_frame_rgba)
+	{
+		video_frame_rgba = (unsigned char*)malloc((size_t)tw * th * 4);
+		video_frame_w = tw;
+		video_frame_h = th;
+	}
+	if (video_frame_rgba)
+	{
+		const BYTE* srcRow = (const BYTE*)mapped.pData;
+		for (int y = 0; y < th; ++y)
+		{
+			memcpy(video_frame_rgba + (size_t)y * tw * 4, srcRow + y * mapped.RowPitch, (size_t)tw * 4);
+		}
+	}
+	LeaveCriticalSection(&video_cs);
+	g_d3dContext->Unmap(g_stagingTex.Get(), 0);
+}
+bool is_video_extension(const wchar_t* path)
+{
+	if (!path) return false;
+	const wchar_t* ext = wcsrchr(path, L'.');
+	if (!ext) return false;
+	return _wcsicmp(ext, L".mp4") == 0 || _wcsicmp(ext, L".avi") == 0 ||
+		_wcsicmp(ext, L".mkv") == 0 || _wcsicmp(ext, L".wmv") == 0 ||
+		_wcsicmp(ext, L".mov") == 0 || _wcsicmp(ext, L".webm") == 0 ||
+		_wcsicmp(ext, L".m4v") == 0;
+}
+
 static const int scale_presets[] = { 50,100,200,300 };
 
 struct ResolutionPreset { int w, h; };
@@ -221,16 +617,47 @@ struct HistoryEntry
 	int size;
 	int w, h;
 	std::wstring prompt;
+	std::wstring video_path; // if non-empty, this entry is a video
 };
 static std::vector<HistoryEntry> history;
 static int history_index = -1;
 static const int max_history_count = 100;
 
+void get_content_size(int& out_w, int& out_h)
+{
+	if (has_video)
+	{
+		if (g_mediaEngine)
+		{
+			DWORD nw = 0, nh = 0;
+			g_mediaEngine->GetNativeVideoSize(&nw, &nh);
+			if (nw > 0 && nh > 0)
+			{
+				out_w = (int)nw;
+				out_h = (int)nh;
+				return;
+			}
+		}
+		if (video_frame_w > 0 && video_frame_h > 0)
+		{
+			out_w = video_frame_w;
+			out_h = video_frame_h;
+			return;
+		}
+	}
+	out_w = w;
+	out_h = h;
+}
+
 void resize_window_to_image()
 {
 	if (window && IsZoomed(window))
 		return;
-	RECT rc = { 0, 0, w, h + get_ref_container_height() + splitter_thickness + button_height + text_height};
+	int cw = w, ch = h;
+	get_content_size(cw, ch);
+	if (cw < 1) cw = 1;
+	if (ch < 1) ch = 1;
+	RECT rc = { 0, 0, cw, ch + get_ref_container_height() + splitter_thickness + button_height + text_height};
 	AdjustWindowRect(&rc, (DWORD)GetWindowLongPtr(window, GWL_STYLE), GetMenu(window) != NULL);
 	SetWindowPos(window, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
@@ -441,7 +868,7 @@ void update_undo_redo_states()
 	EnableWindow(hBtnUndo, history_index > 0);
 	EnableWindow(hBtnRedo, history_index < (int)history.size() - 1);
 }
-void push_history(unsigned char* raw_rgba, int width, int height, bool save_output = false, int batch_index = 0)
+void push_history(unsigned char* raw_rgba, int width, int height, bool save_output = false, int batch_index = 0, const wchar_t* video_path = nullptr)
 {
 	int out_size = 0;
 	unsigned char* png_data = nullptr;
@@ -466,7 +893,8 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 		history_index--;
 	}
 
-	if (history.size() > 0 && history.back().data == nullptr)
+	// Only drop trailing empty image entries that also have no video
+	if (history.size() > 0 && history.back().data == nullptr && history.back().video_path.empty())
 	{
 		history.pop_back();
 		history_index--;
@@ -476,7 +904,8 @@ void push_history(unsigned char* raw_rgba, int width, int height, bool save_outp
 	std::wstring buffer(length, L'\0');
 	GetWindowText(hEdit, &buffer[0], length + 1);
 
-	history.push_back({ png_data, out_size, width, height, buffer });
+	HistoryEntry entry = { png_data, out_size, width, height, buffer, video_path ? video_path : L"" };
+	history.push_back(entry);
 	history_index++;
 
 	if (save_output && png_data != nullptr)
@@ -510,13 +939,38 @@ void load_history_entry()
 {
 	if (history_index < 0 || history_index >= (int)history.size()) return;
 
+	clear_video_player();
 	if (rgba) { free(rgba); rgba = nullptr; }
 	if (rgba2) { free(rgba2); rgba2 = nullptr; }
 
-	if (history[history_index].data != nullptr)
+	const HistoryEntry& entry = history[history_index];
+	SetWindowText(hEdit, entry.prompt.c_str());
+
+	if (!entry.video_path.empty())
+	{
+		if (entry.data != nullptr)
+		{
+			int w_temp, h_temp, c_temp;
+			unsigned char* decoded = stbi_load_from_memory(entry.data, entry.size, &w_temp, &h_temp, &c_temp, 4);
+			if (decoded)
+			{
+				rgba = decoded;
+				w = w_temp;
+				h = h_temp;
+			}
+		}
+		// No window resize on history navigation (same as still images)
+		load_video_file(entry.video_path.c_str(), false);
+		// Stay paused — show history still until user hits play (images just display)
+		redraw();
+		update_undo_redo_states();
+		return;
+	}
+
+	if (entry.data != nullptr)
 	{
 		int w_temp, h_temp, c_temp;
-		unsigned char* decoded = stbi_load_from_memory(history[history_index].data, history[history_index].size, &w_temp, &h_temp, &c_temp, 4);
+		unsigned char* decoded = stbi_load_from_memory(entry.data, entry.size, &w_temp, &h_temp, &c_temp, 4);
 
 		if (decoded)
 		{
@@ -524,8 +978,6 @@ void load_history_entry()
 			w = w_temp;
 			h = h_temp;
 		}
-
-		SetWindowText(hEdit, history[history_index].prompt.c_str());
 	}
 
 	redraw();
@@ -614,6 +1066,7 @@ void load_image()
 		char filename[MAX_PATH] = {};
 		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
 
+		clear_video_player();
 		if (rgba)
 		{
 			free(rgba);
@@ -635,9 +1088,42 @@ void load_image()
 		}
 	}
 }
+static bool get_export_pixels(const unsigned char*& out_rgba, int& out_w, int& out_h, unsigned char*& temp_owned)
+{
+	temp_owned = nullptr;
+	if (has_video && video_frame_rgba && video_frame_w > 0 && video_frame_h > 0)
+	{
+		// Convert BGRA → RGBA for stb writers
+		out_w = video_frame_w;
+		out_h = video_frame_h;
+		temp_owned = (unsigned char*)malloc((size_t)out_w * out_h * 4);
+		if (!temp_owned) return false;
+		for (int i = 0; i < out_w * out_h; ++i)
+		{
+			temp_owned[i * 4 + 0] = video_frame_rgba[i * 4 + 2];
+			temp_owned[i * 4 + 1] = video_frame_rgba[i * 4 + 1];
+			temp_owned[i * 4 + 2] = video_frame_rgba[i * 4 + 0];
+			temp_owned[i * 4 + 3] = video_frame_rgba[i * 4 + 3] ? video_frame_rgba[i * 4 + 3] : 255;
+		}
+		out_rgba = temp_owned;
+		return true;
+	}
+	if (rgba2 && disp_w > 0 && disp_h > 0)
+	{
+		out_rgba = rgba2;
+		out_w = disp_w;
+		out_h = disp_h;
+		return true;
+	}
+	return false;
+}
+
 void save_image()
 {
-	if (!rgba2 || disp_w <= 0 || disp_h <= 0)
+	const unsigned char* pixels = nullptr;
+	int width = 0, height = 0;
+	unsigned char* temp = nullptr;
+	if (!get_export_pixels(pixels, width, height, temp))
 	{
 		MessageBox(window, L"No generated image to save!", L"Error", MB_ICONERROR | MB_OK);
 		return;
@@ -665,8 +1151,6 @@ void save_image()
 		char filename[MAX_PATH] = {};
 		WideCharToMultiByte(CP_UTF8, 0, szFile, -1, filename, MAX_PATH, nullptr, nullptr);
 
-		int width = disp_w;
-		int height = disp_h;
 		bool success = false;
 
 		std::string str_filename(filename);
@@ -692,13 +1176,13 @@ void save_image()
 			{
 				if (size > width && size > height && size != 256) continue;
 
-				const unsigned char* srcPtr = rgba2;
+				const unsigned char* srcPtr = pixels;
 				std::vector<unsigned char> resized_buffer;
 
 				if (width != size || height != size)
 				{
 					resized_buffer.resize(size * size * 4);
-					stbir_resize_uint8_srgb(rgba2, width, height, width * 4, resized_buffer.data(), size, size, size * 4, STBIR_RGBA);
+					stbir_resize_uint8_srgb(pixels, width, height, width * 4, resized_buffer.data(), size, size, size * 4, STBIR_RGBA);
 					srcPtr = resized_buffer.data();
 				}
 
@@ -772,19 +1256,19 @@ void save_image()
 		}
 		else if (ofn.nFilterIndex == 3 || check_extension(str_filename, ".jpg") || check_extension(str_filename, ".jpeg"))
 		{
-			success = stbi_write_jpg(filename, width, height, 4, rgba2, 90) != 0;
+			success = stbi_write_jpg(filename, width, height, 4, pixels, 90) != 0;
 		}
 		else if (ofn.nFilterIndex == 4 || check_extension(str_filename, ".bmp"))
 		{
-			success = stbi_write_bmp(filename, width, height, 4, rgba2) != 0;
+			success = stbi_write_bmp(filename, width, height, 4, pixels) != 0;
 		}
 		else if (ofn.nFilterIndex == 5 || check_extension(str_filename, ".tga"))
 		{
-			success = stbi_write_tga(filename, width, height, 4, rgba2) != 0;
+			success = stbi_write_tga(filename, width, height, 4, pixels) != 0;
 		}
 		else
 		{
-			success = stbi_write_png(filename, width, height, 4, rgba2, width * 4) != 0;
+			success = stbi_write_png(filename, width, height, 4, pixels, width * 4) != 0;
 		}
 
 		if (!success)
@@ -792,12 +1276,14 @@ void save_image()
 			MessageBox(window, L"Failed to save image.", L"Error", MB_ICONERROR | MB_OK);
 		}
 	}
+	if (temp) free(temp);
 }
 void copy_image()
 {
-	int draw_width = disp_w;
-	int draw_height = disp_h;
-	if (!rgba2 || draw_width <= 0 || draw_height <= 0)
+	const unsigned char* pixels = nullptr;
+	int draw_width = 0, draw_height = 0;
+	unsigned char* temp = nullptr;
+	if (!get_export_pixels(pixels, draw_width, draw_height, temp))
 	{
 		MessageBox(window, L"No generated image to copy!", L"Error", MB_ICONERROR | MB_OK);
 		return;
@@ -808,7 +1294,11 @@ void copy_image()
 	size_t total_size = sizeof(BITMAPINFOHEADER) + image_size;
 
 	HGLOBAL hClipboardData = GlobalAlloc(GMEM_MOVEABLE, total_size);
-	if (!hClipboardData) return;
+	if (!hClipboardData)
+	{
+		if (temp) free(temp);
+		return;
+	}
 
 	void* pData = GlobalLock(hClipboardData);
 	if (pData)
@@ -827,7 +1317,7 @@ void copy_image()
 		unsigned char* pDestPixels = (unsigned char*)pData + sizeof(BITMAPINFOHEADER);
 		for (int y = 0; y < draw_height; ++y)
 		{
-			unsigned char* src_row = rgba2 + ((draw_height - 1 - y) * row_stride);
+			const unsigned char* src_row = pixels + ((draw_height - 1 - y) * row_stride);
 			unsigned char* dst_row = pDestPixels + (y * row_stride);
 
 			// Reorder raw storage layer RGBA -> Clipboard BGRA channel alignment configurations
@@ -852,6 +1342,7 @@ void copy_image()
 			GlobalFree(hClipboardData);
 		}
 	}
+	if (temp) free(temp);
 }
 void paste_image(bool is_reference = false)
 {
@@ -866,6 +1357,19 @@ void paste_image(bool is_reference = false)
 			if (DragQueryFile((HDROP)hDrop, 0, wfilename, ARRAYSIZE(wfilename)) > 0)
 			{
 				CloseClipboard();
+
+				if (!is_reference && is_video_extension(wfilename))
+				{
+					push_history(rgba, w, h, false, 0, wfilename);
+					size_t pathChars = wcslen(wfilename) + 1;
+					wchar_t* pathCopy = (wchar_t*)malloc(pathChars * sizeof(wchar_t));
+					if (pathCopy)
+					{
+						wcscpy_s(pathCopy, pathChars, wfilename);
+						PostMessage(window, WM_APP + 1, 0, (LPARAM)pathCopy);
+					}
+					return;
+				}
 
 				char filename[MAX_PATH] = {};
 				WideCharToMultiByte(CP_UTF8, 0, wfilename, -1, filename, MAX_PATH, nullptr, nullptr);
@@ -885,6 +1389,7 @@ void paste_image(bool is_reference = false)
 					}
 					else
 					{
+						clear_video_player();
 						if (rgba) free(rgba);
 						if (rgba2) { free(rgba2); rgba2 = nullptr; }
 
@@ -943,6 +1448,7 @@ void paste_image(bool is_reference = false)
 		}
 		else
 		{
+			clear_video_player();
 			if (rgba) free(rgba);
 			if (rgba2) { free(rgba2); rgba2 = nullptr; }
 
@@ -981,6 +1487,7 @@ void generation()
 
 	std::thread worker([] {
 		is_generating.store(true);
+		clear_video_player(); // stop any previous in-window video playback
 		redraw();
 
 		std::string prompt;
@@ -2000,7 +2507,7 @@ void generation()
 						tmptr = &time_info;
 						localtime_s(&time_info, &t);
 
-						// Present last frame to window
+						// Present last frame to window (history)
 						if (num_frames > 0)
 						{
 							sd_image_t* image = &frames[num_frames - 1];
@@ -2183,9 +2690,20 @@ void generation()
 								// 8. Finalize Writer
 								pSinkWriter->Finalize();
 							}
-							MFShutdown();
-							CoUninitialize();
-							ShellExecute(NULL, L"open", output_file.c_str(), NULL, NULL, SW_SHOWNORMAL); // open video
+							// Do not MFShutdown / CoUninitialize here — media engine needs MF to stay alive
+							// Attach video path to the last history entry so undo/redo works
+							if (history_index >= 0 && history_index < (int)history.size())
+								history[history_index].video_path = output_file;
+							// Load the written file into the in-app player on the UI thread
+							if (window)
+							{
+								wchar_t* pathCopy = (wchar_t*)malloc((output_file.size() + 1) * sizeof(wchar_t));
+								if (pathCopy)
+								{
+									wcscpy_s(pathCopy, output_file.size() + 1, output_file.c_str());
+									PostMessage(window, WM_APP + 1, 0, (LPARAM)pathCopy);
+								}
+							}
 						}
 					}
 					else
@@ -2396,10 +2914,49 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			redraw();
 		}
 		break;
+		case WM_APP + 1: // load video from path (LPARAM = wchar_t* allocated with malloc)
+		{
+			wchar_t* path = (wchar_t*)lParam;
+			if (path)
+			{
+				if (load_video_file(path))
+					video_play();
+				update_undo_redo_states();
+			}
+		}
+		break;
+		case WM_APP + 2: // media ready (LOADEDDATA/CANPLAY) — safe place for Play + resize
+		{
+			if (!g_mediaEngine || !has_video) break;
+			if (video_autoplay)
+			{
+				g_mediaEngine->Play();
+				video_autoplay = false;
+			}
+			// Always track native size in w/h (same as images keep pixel size in w/h)
+			DWORD nw = 0, nh = 0;
+			g_mediaEngine->GetNativeVideoSize(&nw, &nh);
+			if (nw > 0 && nh > 0)
+			{
+				w = (int)nw;
+				h = (int)nh;
+				if (video_need_resize)
+				{
+					video_need_resize = false;
+					resize_window_to_image();
+				}
+			}
+			InvalidateRect(hWnd, NULL, FALSE);
+		}
+		break;
+		case WM_APP + 3: // lightweight UI refresh after play/pause/end/error
+			InvalidateRect(hWnd, NULL, FALSE);
+			break;
 		case WM_DESTROY:
 			exiting = true;
 			KillTimer(hWnd, IDT_ANIM);
 			KillTimer(hWnd, IDT_MEM);
+			KillTimer(hWnd, IDT_VIDEO);
 			// Save settings to registry
 			{
 				HKEY hKey = nullptr;
@@ -2425,6 +2982,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 			}
 			clear_ref_images();
+			clear_video_player();
 			PostQuitMessage(0);
 			break;
 		case WM_TIMER:
@@ -2437,6 +2995,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				else
 				{
 					// Only invalidate the image area for cheap animation updates
+					RECT r = { 0, 0, w2, h2 };
+					InvalidateRect(hWnd, &r, FALSE);
+				}
+			}
+			else if (wParam == IDT_VIDEO)
+			{
+				if (has_video && !is_generating.load())
+				{
+					transfer_video_frame();
 					RECT r = { 0, 0, w2, h2 };
 					InvalidateRect(hWnd, &r, FALSE);
 				}
@@ -2481,12 +3048,46 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			HBITMAP hBmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
 			if (hBmp && bits)
 			{
-				// Checkerboard + image into the top h2 rows
+				// Checkerboard + image/video into the top h2 rows
 				EnterCriticalSection(&image_cs);
+				if (video_cs_inited) EnterCriticalSection(&video_cs);
 				unsigned char* dst = (unsigned char*)bits;
 				const int cell = 32;
-				const int ox = (w2 - disp_w) / 2;
-				const int oy = (h2 - disp_h) / 2;
+				const bool draw_video = has_video && video_frame_rgba && video_frame_w > 0 && video_frame_h > 0;
+
+				// Fit source into (w2,h2) preserving aspect — same logic as still images
+				int fit_w = 0, fit_h = 0;
+				int src_w = 0, src_h = 0;
+				const unsigned char* src_pixels = nullptr;
+				if (draw_video)
+				{
+					src_w = video_frame_w;
+					src_h = video_frame_h;
+					src_pixels = video_frame_rgba;
+					const float src_aspect = (float)src_w / (float)src_h;
+					if ((float)w2 / src_aspect <= (float)h2)
+					{
+						fit_w = w2;
+						fit_h = (int)((float)w2 / src_aspect + 0.5f);
+					}
+					else
+					{
+						fit_h = h2;
+						fit_w = (int)((float)h2 * src_aspect + 0.5f);
+					}
+					if (fit_w < 1) fit_w = 1;
+					if (fit_h < 1) fit_h = 1;
+				}
+				else
+				{
+					src_w = disp_w;
+					src_h = disp_h;
+					src_pixels = rgba2;
+					fit_w = disp_w;
+					fit_h = disp_h;
+				}
+				const int ox = (w2 - fit_w) / 2;
+				const int oy = (h2 - fit_h) / 2;
 				for (int y = 0; y < h2; ++y)
 				{
 					for (int x = 0; x < w2; ++x)
@@ -2494,13 +3095,24 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						const unsigned char cb = (((x / cell) + (y / cell)) & 1) ? 25 : 35;
 						unsigned char a = 0;
 						unsigned char sr = 0, sg = 0, sb = 0;
-						if (rgba2 && disp_w > 0 && disp_h > 0 && x >= ox && x < ox + disp_w && y >= oy && y < oy + disp_h)
+						if (src_pixels && fit_w > 0 && fit_h > 0 && x >= ox && x < ox + fit_w && y >= oy && y < oy + fit_h)
 						{
-							const unsigned char* p = rgba2 + ((size_t)(y - oy) * disp_w + (x - ox)) * 4;
-							sr = p[0];
-							sg = p[1];
-							sb = p[2];
-							a = p[3];
+							int sx, sy;
+							if (draw_video)
+							{
+								// nearest-neighbor scale from native frame to fitted size
+								sx = (int)((int64_t)(x - ox) * src_w / fit_w);
+								sy = (int)((int64_t)(y - oy) * src_h / fit_h);
+								if (sx >= src_w) sx = src_w - 1;
+								if (sy >= src_h) sy = src_h - 1;
+								const unsigned char* p = src_pixels + ((size_t)sy * src_w + sx) * 4;
+								sb = p[0]; sg = p[1]; sr = p[2]; a = p[3] ? p[3] : 255; // BGRA
+							}
+							else
+							{
+								const unsigned char* p = src_pixels + ((size_t)(y - oy) * src_w + (x - ox)) * 4;
+								sr = p[0]; sg = p[1]; sb = p[2]; a = p[3]; // RGBA
+							}
 						}
 						const unsigned char inv = 255 - a;
 						dst[0] = (sb * a + cb * inv) / 255; // B
@@ -2510,6 +3122,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 						dst += 4;
 					}
 				}
+				if (video_cs_inited) LeaveCriticalSection(&video_cs);
 				LeaveCriticalSection(&image_cs);
 
 				// Soft transparent Gaussian glow traveling around the perimeter (blended into the DIB)
@@ -2649,12 +3262,157 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					const wchar_t* status = cancel_request.load() ? L"Stopping..." : L"Working...";
 					draw_centered_text(status, 64, RGB(255, 255, 255), true);
 				}
-				else if (rgba == nullptr && !is_generating.load())
+				else if (rgba == nullptr && !is_generating.load() && !has_video)
 				{
 					const wchar_t* status = L"The image will be generated here.\nOr drag and drop an image here.";
 					draw_centered_text(status, 26, RGB(155, 155, 155), false);
 				}
 
+				if (has_video && h2 > VIDEO_CTRL_H + 36)
+				{
+					// Single row: [Play/Pause] [Stop] ========seek========  time
+					const int btn_w = 40;
+					const int btn_gap = 6;
+					const int margin = 14;
+					const int side_pad = 12;
+					const int seek_left_gap = 12;
+					const int time_w = 78;
+
+					int by = h2 - VIDEO_CTRL_H - margin;
+					int bx = side_pad;
+					btn_play_rect  = { bx, by, bx + btn_w, by + VIDEO_CTRL_H };
+					bx += btn_w + btn_gap;
+					btn_stop_rect  = { bx, by, bx + btn_w, by + VIDEO_CTRL_H };
+					btn_pause_rect = { 0, 0, 0, 0 };
+
+					const int seek_l = btn_stop_rect.right + seek_left_gap;
+					const int seek_r = w2 - side_pad - time_w;
+					const int track_h = VIDEO_SEEK_H;
+					const int track_t = by + (VIDEO_CTRL_H - track_h) / 2;
+					video_seek_rect = { seek_l, by + (VIDEO_CTRL_H - VIDEO_SEEK_HIT) / 2, seek_r, by + (VIDEO_CTRL_H - VIDEO_SEEK_HIT) / 2 + VIDEO_SEEK_HIT };
+
+					// Soft dark plate behind the whole control row
+					{
+						const float left   = (float)(side_pad - 6);
+						const float right  = (float)(w2 - side_pad + 6);
+						const float top    = (float)(by - 6);
+						const float bottom = (float)(by + VIDEO_CTRL_H + 6);
+						const float corner = 50.0f;
+						const float soft   = 96.0f;
+						const float opa    = 140.0f;
+
+						int x0 = (int)(left - soft - 1); if (x0 < 0) x0 = 0;
+						int x1 = (int)(right + soft + 1); if (x1 >= w2) x1 = w2 - 1;
+						int y0 = (int)(top - soft - 1); if (y0 < 0) y0 = 0;
+						int y1 = (int)(bottom + soft + 1); if (y1 >= h2) y1 = h2 - 1;
+
+						for (int yy = y0; yy <= y1; ++yy)
+						{
+							unsigned char* row = (unsigned char*)bits + ((size_t)yy * w2) * 4;
+							for (int xx = x0; xx <= x1; ++xx)
+							{
+								float px = (float)xx + 0.5f;
+								float py = (float)yy + 0.5f;
+								float cx = 0.5f * (left + right);
+								float cy = 0.5f * (top + bottom);
+								float hx = 0.5f * (right - left) - corner;
+								float hy = 0.5f * (bottom - top) - corner;
+								float dx = fabsf(px - cx) - hx;
+								float dy = fabsf(py - cy) - hy;
+								float ax = dx > 0.f ? dx : 0.f;
+								float ay = dy > 0.f ? dy : 0.f;
+								float outside = sqrtf(ax * ax + ay * ay);
+								float inside = fminf(fmaxf(dx, dy), 0.f);
+								float dist = outside + inside - corner;
+								float g;
+								if (dist <= 0.f) g = 1.f;
+								else if (dist >= soft) g = 0.f;
+								else { float t = dist / soft; g = expf(-t * t * 4.0f); }
+								if (g < (1.0f / 255.0f)) continue;
+								const int alpha = (int)(g * opa);
+								const int inv = 255 - alpha;
+								unsigned char* p = row + xx * 4;
+								p[0] = (unsigned char)((p[0] * inv) / 255);
+								p[1] = (unsigned char)((p[1] * inv) / 255);
+								p[2] = (unsigned char)((p[2] * inv) / 255);
+							}
+						}
+					}
+
+					const int track_w = seek_r - seek_l;
+					if (track_w > 8)
+					{
+						double dur = video_get_duration();
+						double cur = video_get_current_time();
+						float progress_u = 0.f;
+						if (dur > 0.0) progress_u = (float)(cur / dur);
+						if (progress_u < 0.f) progress_u = 0.f;
+						if (progress_u > 1.f) progress_u = 1.f;
+						const int fill_r = seek_l + (int)(progress_u * track_w + 0.5f);
+						const int track_b = track_t + track_h;
+
+						auto blend_row = [&](int xx, int yy, int r, int g, int b, int a)
+						{
+							if (xx < 0 || yy < 0 || xx >= w2 || yy >= h2) return;
+							unsigned char* p = (unsigned char*)bits + ((size_t)yy * w2 + xx) * 4;
+							const int inv = 255 - a;
+							p[0] = (unsigned char)((b * a + p[0] * inv) / 255);
+							p[1] = (unsigned char)((g * a + p[1] * inv) / 255);
+							p[2] = (unsigned char)((r * a + p[2] * inv) / 255);
+						};
+
+						for (int yy = track_t; yy < track_b; ++yy)
+							for (int xx = seek_l; xx < seek_r; ++xx)
+								blend_row(xx, yy, 255, 255, 255, 55);
+						for (int yy = track_t; yy < track_b; ++yy)
+							for (int xx = seek_l; xx < fill_r; ++xx)
+								blend_row(xx, yy, 90, 170, 255, 210);
+
+						const float tcx = (float)fill_r;
+						const float tcy = 0.5f * (track_t + track_b);
+						const float trad = video_seeking ? 7.0f : 5.5f;
+						const int x0 = (int)(tcx - trad - 1), x1 = (int)(tcx + trad + 1);
+						const int y0 = (int)(tcy - trad - 1), y1 = (int)(tcy + trad + 1);
+						for (int yy = y0; yy <= y1; ++yy)
+							for (int xx = x0; xx <= x1; ++xx)
+							{
+								float dx = xx + 0.5f - tcx, dy = yy + 0.5f - tcy;
+								float d2 = dx * dx + dy * dy;
+								float g = expf(-d2 / (2.0f * (trad * 0.45f) * (trad * 0.45f)));
+								if (g < 0.05f) continue;
+								blend_row(xx, yy, 240, 245, 255, (int)(g * 240));
+							}
+
+						auto fmt_time = [](double sec, wchar_t* buf, size_t n)
+						{
+							if (sec < 0.0 || sec != sec) sec = 0.0;
+							int total = (int)(sec + 0.5);
+							_snwprintf(buf, n, L"%d:%02d", total / 60, total % 60);
+						};
+						wchar_t tcur[32] = {}, tdur[32] = {}, tlabel[64] = {};
+						fmt_time(cur, tcur, 32);
+						fmt_time(dur, tdur, 32);
+						_snwprintf(tlabel, 64, L"%s/%s", tcur, tdur);
+						SetTextColor(memDC, RGB(220, 220, 220));
+						HFONT timeFont = CreateFont(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+						HFONT oldTime = (HFONT)SelectObject(memDC, timeFont);
+						RECT timeRc = { seek_r + 4, by, w2 - side_pad, by + VIDEO_CTRL_H };
+						DrawText(memDC, tlabel, -1, &timeRc, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+						SelectObject(memDC, oldTime);
+						DeleteObject(timeFont);
+					}
+
+					auto draw_icon = [&](const RECT& rc, const wchar_t* icon) {
+						SetTextColor(memDC, RGB(240, 240, 240));
+						HFONT f = CreateFont(26, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe MDL2 Assets");
+						HFONT oldF = (HFONT)SelectObject(memDC, f);
+						DrawText(memDC, icon, -1, (RECT*)&rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						SelectObject(memDC, oldF);
+						DeleteObject(f);
+					};
+					draw_icon(btn_play_rect, video_playing ? L"\xE769" : L"\xE768");
+					draw_icon(btn_stop_rect, L"\xE71A");
+				}
 				if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO)
 				{
 					RECT ref_rect = { 0, h2, w2, h2 + ref_h };
@@ -2774,6 +3532,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					copy_image();
 					break;
 				case IDC_CLEAR_BUTTON:
+					clear_video_player();
 					if (rgba) { free(rgba); rgba = nullptr; }
 					if (rgba2) { free(rgba2); rgba2 = nullptr; }
 					push_history(nullptr, w, h);
@@ -2869,17 +3628,21 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
-				for (int i = 0; i < ARRAYSIZE(scale_presets); ++i)
 				{
-					wchar_t restext[32] = {};
-					_snwprintf(restext, ARRAYSIZE(restext), L"%d%%", scale_presets[i]);
-					UINT flags = MF_STRING;
-					const float scale = float(scale_presets[i]) / 100.0f;
-					if (int(w * scale) == w2 && int(h * scale) == h2)
+					int cw = w, ch = h;
+					get_content_size(cw, ch);
+					for (int i = 0; i < ARRAYSIZE(scale_presets); ++i)
 					{
-						flags |= MF_CHECKED;
+						wchar_t restext[32] = {};
+						_snwprintf(restext, ARRAYSIZE(restext), L"%d%%", scale_presets[i]);
+						UINT flags = MF_STRING;
+						const float scale = float(scale_presets[i]) / 100.0f;
+						if (int(cw * scale) == w2 && int(ch * scale) == h2)
+						{
+							flags |= MF_CHECKED;
+						}
+						AppendMenu(hMenu, flags, 2000 + i, restext);
 					}
-					AppendMenu(hMenu, flags, 2000 + i, restext);
 				}
 
 				AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
@@ -2921,6 +3684,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hWnd, NULL);
 
 				if (selection == 1099) { // New image
+					clear_video_player();
 					if (rgba) { free(rgba); rgba = nullptr; }
 					if (rgba2) { free(rgba2); rgba2 = nullptr; }
 					clear_ref_images();
@@ -3038,9 +3802,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					selection -= 2000;
 					if (selection >= 0 && selection < ARRAYSIZE(scale_presets))
 					{
+						int cw = w, ch = h;
+						get_content_size(cw, ch);
 						const float scale = float(scale_presets[selection]) / 100.0f;
-						w2 = int(w * scale);
-						h2 = int(h * scale);
+						w2 = int(cw * scale);
+						h2 = int(ch * scale);
+						if (w2 < 1) w2 = 1;
+						if (h2 < 1) h2 = 1;
 						redraw();
 					}
 					resize_fixed = false;
@@ -3110,19 +3878,37 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else
 				{
-					if (rgba)
+					if (is_video_extension(wfilename))
 					{
-						free(rgba);
-						rgba = nullptr;
+						// Snapshot current still + path into history, then load async
+						// (loading Media Engine inside DROPFILES + sync callbacks can hang)
+						push_history(rgba, w, h, false, 0, wfilename);
+						size_t pathChars = wcslen(wfilename) + 1;
+						wchar_t* pathCopy = (wchar_t*)malloc(pathChars * sizeof(wchar_t));
+						if (pathCopy)
+						{
+							wcscpy_s(pathCopy, pathChars, wfilename);
+							PostMessage(hWnd, WM_APP + 1, 0, (LPARAM)pathCopy);
+						}
+						SetForegroundWindow(hWnd);
 					}
-					if (rgba2)
+					else
 					{
-						free(rgba2);
-						rgba2 = nullptr;
+						clear_video_player();
+						if (rgba)
+						{
+							free(rgba);
+							rgba = nullptr;
+						}
+						if (rgba2)
+						{
+							free(rgba2);
+							rgba2 = nullptr;
+						}
+						rgba = load_image_file(filename, &w, &h, &c);
+						if (rgba) push_history(rgba, w, h);
+						resize_window_to_image();
 					}
-					rgba = load_image_file(filename, &w, &h, &c);
-					if (rgba) push_history(rgba, w, h);
-					resize_window_to_image();
 				}
 			}
 
@@ -3176,6 +3962,33 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 			int mouse_x = LOWORD(lParam);
 			int mouse_y = HIWORD(lParam);
 
+			// Video overlay controls (seek / play-pause / stop)
+			if (has_video)
+			{
+				POINT pt = { mouse_x, mouse_y };
+				if (PtInRect(&video_seek_rect, pt))
+				{
+					video_seeking = true;
+					SetCapture(hWnd);
+					video_seek_from_x(mouse_x);
+					InvalidateRect(hWnd, NULL, FALSE);
+					return 0;
+				}
+				if (PtInRect(&btn_play_rect, pt))
+				{
+					if (video_playing) video_pause();
+					else video_play();
+					InvalidateRect(hWnd, NULL, FALSE);
+					return 0;
+				}
+				if (PtInRect(&btn_stop_rect, pt))
+				{
+					video_stop();
+					InvalidateRect(hWnd, NULL, FALSE);
+					return 0;
+				}
+			}
+
 			// Check clicks inside reference image close rect to delete items
 			if (mouse_y >= h2 && mouse_y < h2 + get_ref_container_height())
 			{
@@ -3200,6 +4013,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 		break;
 
 		case WM_LBUTTONUP:
+			if (video_seeking)
+			{
+				video_seeking = false;
+				video_seek_preview = -1.0;
+				ReleaseCapture();
+				InvalidateRect(hWnd, NULL, FALSE);
+			}
 			if (is_dragging)
 			{
 				is_dragging = false;
@@ -3210,9 +4030,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 		case WM_MOUSEMOVE:
 		{
+			int mouse_x = LOWORD(lParam);
 			int mouse_y = HIWORD(lParam);
 
-			if (is_dragging)
+			if (video_seeking)
+			{
+				video_seek_from_x(mouse_x);
+				InvalidateRect(hWnd, NULL, FALSE);
+			}
+			else if (is_dragging)
 			{
 				RECT rc;
 				GetClientRect(hWnd, &rc);
@@ -3437,6 +4263,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	rgba2 = nullptr;
 	LeaveCriticalSection(&image_cs);
 	DeleteCriticalSection(&image_cs);
+
+	clear_video_player();
+	if (video_cs_inited)
+	{
+		DeleteCriticalSection(&video_cs);
+		video_cs_inited = false;
+	}
+	g_dxgiManager.Reset();
+	g_d3dDevice.Reset();
+	g_d3dContext.Reset();
 
 	return 0;
 }
