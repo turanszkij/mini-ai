@@ -19,6 +19,7 @@ Made in C++ and WinAPI, no external dependencies.
     - Qwen Image Edit
 - Ask: enter a text and the AI will answer, also supports image if one is opened
     - Qwen 3 VL
+    - Qwen 3.8 27B
     - Gemma 4
 - Video: generate a video from text prompt, and/or from the reference images
     - Wan 2.2

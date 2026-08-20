@@ -113,6 +113,7 @@ static std::atomic_bool cancel_request{ false }; // true when user pushed STOP b
 static std::wstring current_download; // if model is downloading, this is printed to feedback text
 static std::string progress_errors; // errors while generation is running are collected here but not presented to user yet
 static std::string final_errors; // if generation fails then the errors wil be copied here and shown to user
+static std::string thinking_text; // thinking text output if model has one
 static CRITICAL_SECTION image_cs; // protects rgba / rgba2 / w,h,disp_* between UI and generation threads
 static HWND window = nullptr;
 static HWND hEdit = nullptr;
@@ -156,6 +157,7 @@ static EDIT_MODEL edit_model = EDIT_MODEL::FLUX2_KLEIN_9B;
 enum class TEXT_MODEL
 {
 	QWEN_3_VL,
+	QWEN_3_8,
 	GEMMA_4,
 };
 static TEXT_MODEL text_model = TEXT_MODEL::QWEN_3_VL;
@@ -1777,6 +1779,8 @@ void generation()
 				std::wstring wstr(cnt, 0);
 				MultiByteToWideChar(CP_UTF8, 0, result_text.c_str(), -1, wstr.data(), cnt);
 				SetWindowText(hEdit, wstr.c_str());
+				SendMessage(hEdit, EM_SETSEL, cnt, cnt);
+				SendMessage(hEdit, EM_SCROLLCARET, 0, 0);
 			};
 
 			ggml_backend_load_all_from_path(u8_dll_dir);
@@ -1790,6 +1794,11 @@ void generation()
 				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf");
 				EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true", model_path);
 			}
+			else if (text_model == TEXT_MODEL::QWEN_3_8)
+			{
+				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/Qwen3.8-27B-Q4_K_M.gguf");
+				EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/Qwen3.8-27B-Q4_K_M.gguf?download=true", model_path);
+			}
 			else if (text_model == TEXT_MODEL::GEMMA_4)
 			{
 				_snwprintf(model_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/gemma-4-E4B-it-Q4_K_M.gguf");
@@ -1799,12 +1808,11 @@ void generation()
 			WideCharToMultiByte(CP_UTF8, 0, model_path, -1, u8_model_path, MAX_PATH, nullptr, nullptr);
 
 			llama_model_params model_params = llama_model_default_params();
-			model_params.n_gpu_layers = is_cpu ? 0 : -1;
+			model_params.n_gpu_layers = (is_cpu || is_text_encode_cpu) ? 0 : -1;
 			model_params.progress_callback = my_llama_progress_callback;
 
 			llama_context_params ctx_params = llama_context_default_params();
 			ctx_params.n_ctx = 8192;
-			ctx_params.n_batch = 512;
 
 			llama_model* model = llama_model_load_from_file(u8_model_path, model_params);
 			if (model != nullptr && !cancel_request.load())
@@ -1812,6 +1820,88 @@ void generation()
 				llama_context* ctx = llama_init_from_model(model, ctx_params);
 				if (ctx != nullptr && !cancel_request.load())
 				{
+					auto generate_completion = [&](llama_pos n_past, int n_decode_max)
+					{
+						llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+						llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+						llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : uint32_t(seed)));
+
+						const llama_vocab* vocab = llama_model_get_vocab(model);
+						std::string result_text;
+						bool thinking = false;
+						int n_decoded = 0;
+
+						auto strip_think_tags = [](std::string s) {
+							for (const char* tag : { "<think>", "</think>" })
+							{
+								size_t pos = 0;
+								const size_t tag_len = strlen(tag);
+								while ((pos = s.find(tag, pos)) != std::string::npos)
+									s.erase(pos, tag_len);
+							}
+							return s;
+						};
+						auto append_thinking = [&](const std::string& s) {
+							if (s.empty()) return;
+							thinking_text += s;
+							size_t para = thinking_text.rfind("\n\n");
+							if (para != std::string::npos)
+								thinking_text = thinking_text.substr(para + 2);
+							while (!thinking_text.empty() && (thinking_text.front() == ' ' || thinking_text.front() == '\n' || thinking_text.front() == '\r'))
+								thinking_text.erase(thinking_text.begin());
+							InvalidateRect(window, NULL, TRUE);
+						};
+
+						while (n_past < (llama_pos)ctx_params.n_ctx && n_decoded < n_decode_max && !cancel_request.load())
+						{
+							llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
+							if (llama_vocab_is_eog(vocab, new_token_id) || new_token_id == llama_vocab_eot(vocab))
+								break;
+
+							char buf[256] = {};
+							int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, true);
+							if (n > 0)
+							{
+								std::string token_str(buf, n);
+								const bool has_open = token_str.find("<think>") != std::string::npos;
+								const bool has_close = token_str.find("</think>") != std::string::npos;
+								const bool was_thinking = thinking;
+								if (has_open) thinking = true;
+								if (has_close) thinking = false;
+
+								if (was_thinking && has_close)
+								{
+									size_t close = token_str.find("</think>");
+									append_thinking(strip_think_tags(token_str.substr(0, close)));
+									result_text += strip_think_tags(token_str.substr(close + 8));
+									if (!result_text.empty())
+									{
+										thinking_text.clear();
+										post_description(result_text);
+									}
+								}
+								else if (thinking || has_open)
+								{
+									append_thinking(strip_think_tags(token_str));
+								}
+								else
+								{
+									result_text += strip_think_tags(token_str);
+									thinking_text.clear();
+									post_description(result_text);
+								}
+							}
+
+							llama_batch one = llama_batch_get_one(&new_token_id, 1);
+							if (llama_decode(ctx, one) != 0)
+								break;
+							n_past += 1;
+							n_decoded += 1;
+						}
+						post_description(result_text);
+						llama_sampler_free(smpl);
+					};
+
 					if (has_image)
 					{
 						// Image -> text generation:
@@ -1823,9 +1913,14 @@ void generation()
 							_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf");
 							EnsureModelExists(L"https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf?download=true", mmproj_path);
 						}
+						else if (text_model == TEXT_MODEL::QWEN_3_8)
+						{
+							_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-Qwen3_8_27B.gguf");
+							EnsureModelExists(L"https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-BF16.gguf?download=true", mmproj_path);
+						}
 						else if (text_model == TEXT_MODEL::GEMMA_4)
 						{
-							_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-BF16.gguf");
+							_snwprintf(mmproj_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models/mmproj-BF16-gemma-4-E4B.gguf");
 							EnsureModelExists(L"https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mmproj-BF16.gguf?download=true", mmproj_path);
 						}
 						WideCharToMultiByte(CP_UTF8, 0, mmproj_path, -1, u8_mmproj_path, MAX_PATH, nullptr, nullptr);
@@ -1872,12 +1967,8 @@ void generation()
 
 							std::string llama_prompt = std::string(mtmd_default_marker());
 
-							if (text_model == TEXT_MODEL::QWEN_3_VL)
+							if (text_model == TEXT_MODEL::QWEN_3_VL || text_model == TEXT_MODEL::QWEN_3_8)
 							{
-								llama_prompt +=
-									"<|im_start|>system\n"
-									"You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n"
-									"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
 								llama_prompt += "<|im_start|>user\n";
 								if (prompt.empty())
 								{
@@ -1893,9 +1984,6 @@ void generation()
 							}
 							else if (text_model == TEXT_MODEL::GEMMA_4)
 							{
-								llama_prompt += "<|turn>system\n";
-								llama_prompt += "You are a helpful assistant, answer the user's questions or follow the orders, based on the attached image.\n";
-								llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.<turn|>\n";
 								llama_prompt += "<|turn>user\n";
 								if (prompt.empty())
 									llama_prompt += "Describe the image in detail";
@@ -1919,48 +2007,7 @@ void generation()
 								llama_pos n_past = 0;
 								if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) == 0)
 								{
-									llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-									llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
-									llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : uint32_t(seed)));
-
-									llama_token new_token_id;
-									const struct llama_vocab* vocab = llama_model_get_vocab(model);
-									bool started_generating = false;
-									std::string result_text;
-									while (n_past < (llama_pos)ctx_params.n_ctx && !cancel_request.load())
-									{
-										new_token_id = llama_sampler_sample(smpl, ctx, -1);
-
-										if (started_generating && (llama_vocab_is_eog(vocab, new_token_id) || new_token_id == llama_vocab_eot(vocab)))
-											break;
-
-										char buf[256];
-										int n = llama_token_to_piece(vocab, new_token_id, buf, sizeof(buf), 0, false);
-
-										if (n > 0) {
-											std::string piece(buf, n);
-
-											// Skip leading whitespace/newlines if we haven't started yet
-											if (!started_generating && (piece == "\n" || piece == " "))
-											{
-												// continue; // Optional: keep skipping until you hit real text
-											}
-											else
-											{
-												started_generating = true;
-												result_text += piece;
-											}
-										}
-
-										llama_batch batch = llama_batch_get_one(&new_token_id, 1);
-										llama_decode(ctx, batch);
-										n_past += 1;
-
-										post_description(result_text);
-									}
-									post_description(result_text);
-
-									llama_sampler_free(smpl);
+									generate_completion(n_past, 1024);
 								}
 							}
 							mtmd_input_chunks_free(chunks);
@@ -1973,12 +2020,8 @@ void generation()
 					{
 						// Text -> text generation
 						std::string llama_prompt;
-						if (text_model == TEXT_MODEL::QWEN_3_VL)
+						if (text_model == TEXT_MODEL::QWEN_3_VL || text_model == TEXT_MODEL::QWEN_3_8)
 						{
-							llama_prompt +=
-								"<|im_start|>system\n"
-								"You are a helpful assistant, answer the user's questions or follow the orders.\n"
-								"Do not repeat the description. Do not write internal notes. Output plain text only.<|im_end|>\n";
 							llama_prompt += "<|im_start|>user\n";
 							llama_prompt += prompt.c_str();
 							llama_prompt += "\n";
@@ -1987,9 +2030,6 @@ void generation()
 						}
 						else if (text_model == TEXT_MODEL::GEMMA_4)
 						{
-							llama_prompt += "<|turn>system\n";
-							llama_prompt += "You are a helpful assistant, answer the user's questions or follow the orders.\n";
-							llama_prompt += "Do not repeat the description. Do not write internal notes. Output plain text only.\n";
 							llama_prompt += "<|turn>user\n";
 							llama_prompt += prompt;
 							llama_prompt += "<turn|>\n";
@@ -2002,12 +2042,9 @@ void generation()
 						std::vector<llama_token> prompt_tokens(n_prompt_tokens);
 						if (llama_tokenize(vocab, llama_prompt.c_str(), (int32_t)llama_prompt.length(), prompt_tokens.data(), (int)prompt_tokens.size(), true, true) >= 0)
 						{
-							llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-							llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
-							llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : uint32_t(seed)));
-
 							llama_batch batch = llama_batch_init(ctx_params.n_batch, 0, 1);
-							for (size_t i = 0; i < prompt_tokens.size(); i++) {
+							for (size_t i = 0; i < prompt_tokens.size(); i++)
+							{
 								batch.token[i] = prompt_tokens[i];
 								batch.pos[i] = (llama_pos)i;
 								batch.n_seq_id[i] = 1;
@@ -2018,48 +2055,17 @@ void generation()
 
 							if (llama_decode(ctx, batch) == 0)
 							{
-								std::string result_text = "";
-								int n_cur = batch.n_tokens;
-								int n_decode_max = 1024;
-
-								while (n_cur < n_decode_max && !cancel_request.load())
-								{
-									llama_token new_token_id = llama_sampler_sample(smpl, ctx, -1);
-									if (llama_vocab_is_eog(vocab, new_token_id) || new_token_id == llama_vocab_eot(vocab)) {
-										break;
-									}
-									char piece_buf[128] = { 0 };
-									int n = llama_token_to_piece(vocab, new_token_id, piece_buf, sizeof(piece_buf), 0, true);
-									if (n > 0) {
-										result_text.append(piece_buf, n);
-									}
-
-									batch.n_tokens = 0;
-									batch.token[0] = new_token_id;
-									batch.pos[0] = n_cur;
-									batch.n_seq_id[0] = 1;
-									batch.seq_id[0][0] = 0;
-									batch.logits[0] = true;
-									batch.n_tokens = 1;
-
-									n_cur++;
-
-									if (llama_decode(ctx, batch) != 0)
-										break;
-
-									post_description(result_text);
-								}
-								post_description(result_text);
+								generate_completion((llama_pos)prompt_tokens.size(), 1024);
 							}
 
 							llama_batch_free(batch);
-							llama_sampler_free(smpl);
 						}
 					}
 				}
 				llama_free(ctx);
 			}
 			final_errors = progress_errors;
+			thinking_text.clear();
 
 			llama_model_free(model);
 			llama_backend_free();
@@ -3202,8 +3208,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 				auto draw_centered_text = [&](const wchar_t* status, int fontSize, COLORREF color, bool singleLine)
 				{
-					HFONT hFont = CreateFont(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					HFONT hFont = CreateFont(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					HFONT hOld = (HFONT)SelectObject(memDC, hFont);
 					RECT textRect = { 0, 0, w2, h2 };
 
@@ -3268,6 +3273,108 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					draw_centered_text(status, 26, RGB(155, 155, 155), false);
 				}
 
+				auto darken_bg = [&](int height) {
+					const float left = 0;
+					const float right = (float)w2;
+					const float bottom = (float)h2;
+					const float top = (float)(h2 - height);
+					const float corner = 50.0f;
+					const float soft = 96.0f;
+					const float opa = 140.0f;
+
+					int x0 = (int)(left - soft - 1); if (x0 < 0) x0 = 0;
+					int x1 = (int)(right + soft + 1); if (x1 >= w2) x1 = w2 - 1;
+					int y0 = (int)(top - soft - 1); if (y0 < 0) y0 = 0;
+					int y1 = (int)(bottom + soft + 1); if (y1 >= h2) y1 = h2 - 1;
+
+					for (int yy = y0; yy <= y1; ++yy)
+					{
+						unsigned char* row = (unsigned char*)bits + ((size_t)yy * w2) * 4;
+						for (int xx = x0; xx <= x1; ++xx)
+						{
+							float px = (float)xx + 0.5f;
+							float py = (float)yy + 0.5f;
+							float cx = 0.5f * (left + right);
+							float cy = 0.5f * (top + bottom);
+							float hx = 0.5f * (right - left) - corner;
+							float hy = 0.5f * (bottom - top) - corner;
+							float dx = fabsf(px - cx) - hx;
+							float dy = fabsf(py - cy) - hy;
+							float ax = dx > 0.f ? dx : 0.f;
+							float ay = dy > 0.f ? dy : 0.f;
+							float outside = sqrtf(ax * ax + ay * ay);
+							float inside = fminf(fmaxf(dx, dy), 0.f);
+							float dist = outside + inside - corner;
+							float g;
+							if (dist <= 0.f) g = 1.f;
+							else if (dist >= soft) g = 0.f;
+							else { float t = dist / soft; g = expf(-t * t * 4.0f); }
+							if (g < (1.0f / 255.0f)) continue;
+							const int alpha = (int)(g * opa);
+							const int inv = 255 - alpha;
+							unsigned char* p = row + xx * 4;
+							p[0] = (unsigned char)((p[0] * inv) / 255);
+							p[1] = (unsigned char)((p[1] * inv) / 255);
+							p[2] = (unsigned char)((p[2] * inv) / 255);
+						}
+					}
+				};
+
+				if (!thinking_text.empty())
+				{
+					std::string clean = thinking_text;
+					for (const char* tag : { "<think>", "</think>" })
+					{
+						size_t pos = 0;
+						const size_t tag_len = strlen(tag);
+						while ((pos = clean.find(tag, pos)) != std::string::npos)
+							clean.erase(pos, tag_len);
+					}
+					while (!clean.empty() && (clean.front() == ' ' || clean.front() == '\n' || clean.front() == '\r'))
+						clean.erase(clean.begin());
+
+					int cnt = MultiByteToWideChar(CP_UTF8, 0, clean.c_str(), -1, nullptr, 0);
+					std::wstring wstr(cnt > 1 ? cnt - 1 : 0, 0);
+					if (cnt > 1)
+						MultiByteToWideChar(CP_UTF8, 0, clean.c_str(), -1, wstr.data(), cnt);
+
+					if (!wstr.empty())
+					{
+						const int pad = 10;
+						const int label_h = 38;
+
+						HFONT hLabelFont = CreateFont(34, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+						HFONT hBodyFont = CreateFont(32, 0, 0, 0, FW_NORMAL, TRUE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+						HFONT hOldF = (HFONT)SelectObject(memDC, hBodyFont);
+						RECT measure = { pad, 0, w2 - pad, 10000 };
+						DrawText(memDC, wstr.c_str(), -1, &measure, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+						int body_h = measure.bottom - measure.top;
+						if (body_h < 16) body_h = 16;
+
+						int think_h = pad + label_h + body_h + pad;
+						if (think_h < 40) think_h = 40;
+						if (think_h > h2) think_h = h2;
+						const int top = h2 - think_h;
+
+						darken_bg(think_h);
+
+						SelectObject(memDC, hLabelFont);
+						SetTextColor(memDC, RGB(140, 180, 255));
+						RECT labelRc = { pad, top + 6, w2 - pad, top + 6 + label_h };
+						DrawText(memDC, L"Thinking...", -1, &labelRc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
+						SelectObject(memDC, hBodyFont);
+						SetTextColor(memDC, RGB(210, 220, 240));
+						RECT bodyRc = { pad, top + 6 + label_h, w2 - pad, h2 - 6 };
+						DrawText(memDC, wstr.c_str(), -1, &bodyRc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+						SelectObject(memDC, hOldF);
+						DeleteObject(hLabelFont);
+						DeleteObject(hBodyFont);
+					}
+				}
+
 				if (has_video && h2 > VIDEO_CTRL_H + 36)
 				{
 					// Single row: [Play/Pause] [Stop] ========seek========  time
@@ -3291,53 +3398,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					const int track_t = by + (VIDEO_CTRL_H - track_h) / 2;
 					video_seek_rect = { seek_l, by + (VIDEO_CTRL_H - VIDEO_SEEK_HIT) / 2, seek_r, by + (VIDEO_CTRL_H - VIDEO_SEEK_HIT) / 2 + VIDEO_SEEK_HIT };
 
-					// Soft dark plate behind the whole control row
-					{
-						const float left   = (float)(side_pad - 6);
-						const float right  = (float)(w2 - side_pad + 6);
-						const float top    = (float)(by - 6);
-						const float bottom = (float)(by + VIDEO_CTRL_H + 6);
-						const float corner = 50.0f;
-						const float soft   = 96.0f;
-						const float opa    = 140.0f;
-
-						int x0 = (int)(left - soft - 1); if (x0 < 0) x0 = 0;
-						int x1 = (int)(right + soft + 1); if (x1 >= w2) x1 = w2 - 1;
-						int y0 = (int)(top - soft - 1); if (y0 < 0) y0 = 0;
-						int y1 = (int)(bottom + soft + 1); if (y1 >= h2) y1 = h2 - 1;
-
-						for (int yy = y0; yy <= y1; ++yy)
-						{
-							unsigned char* row = (unsigned char*)bits + ((size_t)yy * w2) * 4;
-							for (int xx = x0; xx <= x1; ++xx)
-							{
-								float px = (float)xx + 0.5f;
-								float py = (float)yy + 0.5f;
-								float cx = 0.5f * (left + right);
-								float cy = 0.5f * (top + bottom);
-								float hx = 0.5f * (right - left) - corner;
-								float hy = 0.5f * (bottom - top) - corner;
-								float dx = fabsf(px - cx) - hx;
-								float dy = fabsf(py - cy) - hy;
-								float ax = dx > 0.f ? dx : 0.f;
-								float ay = dy > 0.f ? dy : 0.f;
-								float outside = sqrtf(ax * ax + ay * ay);
-								float inside = fminf(fmaxf(dx, dy), 0.f);
-								float dist = outside + inside - corner;
-								float g;
-								if (dist <= 0.f) g = 1.f;
-								else if (dist >= soft) g = 0.f;
-								else { float t = dist / soft; g = expf(-t * t * 4.0f); }
-								if (g < (1.0f / 255.0f)) continue;
-								const int alpha = (int)(g * opa);
-								const int inv = 255 - alpha;
-								unsigned char* p = row + xx * 4;
-								p[0] = (unsigned char)((p[0] * inv) / 255);
-								p[1] = (unsigned char)((p[1] * inv) / 255);
-								p[2] = (unsigned char)((p[2] * inv) / 255);
-							}
-						}
-					}
+					darken_bg(VIDEO_CTRL_H);
 
 					const int track_w = seek_r - seek_l;
 					if (track_w > 8)
@@ -3617,6 +3678,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 				HMENU hTextModelMenu = CreatePopupMenu();
 				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::QWEN_3_VL ? MF_CHECKED : 0), 1300, L"Qwen 3 VL");
+				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::QWEN_3_8 ? MF_CHECKED : 0), 1301, L"Qwen 3.8 27B");
 				AppendMenu(hTextModelMenu, MF_STRING | (text_model == TEXT_MODEL::GEMMA_4 ? MF_CHECKED : 0), 1310, L"Gemma 4");
 				AppendMenu(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hTextModelMenu, L"Text generation model...");
 
@@ -3749,6 +3811,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 				}
 				else if (selection == 1300) {
 					text_model = TEXT_MODEL::QWEN_3_VL;
+				}
+				else if (selection == 1301) {
+					text_model = TEXT_MODEL::QWEN_3_8;
 				}
 				else if (selection == 1310) {
 					text_model = TEXT_MODEL::GEMMA_4;
