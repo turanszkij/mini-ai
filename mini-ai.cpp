@@ -188,7 +188,7 @@ void clear_ref_images()
 }
 int get_ref_container_height()
 {
-	if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO)
+	if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO || mode == MODE::ASK)
 	{
 		return reference_image_area_height;
 	}
@@ -1503,7 +1503,7 @@ void generation()
 			WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, prompt.data(), (int)prompt.length(), nullptr, nullptr);
 		}
 
-		const bool has_image = rgba != nullptr || rgba2 != nullptr;
+		const bool has_image = rgba != nullptr || !reference_images.empty();
 
 		wchar_t models_path[MAX_PATH] = {};
 		_snwprintf(models_path, MAX_PATH, L"%s%s", originalWorkingDir, L"/models");
@@ -1957,15 +1957,31 @@ void generation()
 						mtmd_context* ctx_mtmd = mtmd_init_from_file(u8_mmproj_path, model, mtmd_params);
 						if (ctx_mtmd != nullptr && !cancel_request.load())
 						{
-							// Convert RGBA -> RGB
-							std::vector<uint8_t> rgb_data(w * h * 3);
+							std::vector<unsigned char*> datas;
+							std::vector<const mtmd_bitmap*> bitmaps;
 							if (rgba)
 							{
-								rgba2rgb(rgba, rgb_data.data(), w, h);
+								unsigned char* rgb = (unsigned char*)malloc(w * h * 3);
+								rgba2rgb(rgba, rgb, w, h);
+								bitmaps.emplace_back(mtmd_bitmap_init(w, h, rgb));
+								datas.push_back(rgb);
 							}
-							mtmd_bitmap* bitmap = mtmd_bitmap_init(w, h, rgb_data.data());
+							for (const auto& rimg : reference_images)
+							{
+								if (rimg.rgba && rimg.w > 0 && rimg.h > 0)
+								{
+									unsigned char* rgb = (unsigned char*)malloc(rimg.w * rimg.h * 3);
+									rgba2rgb(rimg.rgba, rgb, rimg.w, rimg.h);
+									bitmaps.emplace_back(mtmd_bitmap_init(rimg.w, rimg.h, rgb));
+									datas.push_back(rgb);
+								}
+							}
 
-							std::string llama_prompt = std::string(mtmd_default_marker());
+							std::string llama_prompt;
+							for (auto& x : bitmaps)
+							{
+								llama_prompt += std::string(mtmd_default_marker());
+							}
 
 							if (text_model == TEXT_MODEL::QWEN_3_VL || text_model == TEXT_MODEL::QWEN_3_8)
 							{
@@ -2001,8 +2017,7 @@ void generation()
 
 							mtmd_input_chunks* chunks = mtmd_input_chunks_init();
 
-							const mtmd_bitmap* bitmaps[1] = { bitmap };
-							if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps, 1) == 0)
+							if (mtmd_tokenize(ctx_mtmd, chunks, &input_text, bitmaps.data(), bitmaps.size()) == 0)
 							{
 								llama_pos n_past = 0;
 								if (mtmd_helper_eval_chunks(ctx_mtmd, ctx, chunks, n_past, 0, 512, true, &n_past) == 0)
@@ -2011,7 +2026,14 @@ void generation()
 								}
 							}
 							mtmd_input_chunks_free(chunks);
-							mtmd_bitmap_free(bitmap);
+							for (auto& x : bitmaps)
+							{
+								mtmd_bitmap_free((mtmd_bitmap*)x);
+							}
+							for (auto& x : datas)
+							{
+								free(x);
+							}
 						}
 						mtmd_free(ctx_mtmd);
 						FreeLibrary(mtmd);
@@ -3474,7 +3496,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 					draw_icon(btn_play_rect, video_playing ? L"\xE769" : L"\xE768");
 					draw_icon(btn_stop_rect, L"\xE71A");
 				}
-				if (mode == MODE::IMAGE_EDIT || mode == MODE::VIDEO)
+				if (get_ref_container_height() > 0)
 				{
 					RECT ref_rect = { 0, h2, w2, h2 + ref_h };
 

@@ -17,7 +17,7 @@ Made in C++ and WinAPI, no external dependencies.
 - Image Editing: Edit the current image with a prompt and other reference images
     - Flux 2 (Klein 4B/9B)
     - Qwen Image Edit
-- Ask: enter a text and the AI will answer, also supports image if one is opened
+- Ask: enter a text and the AI will answer, also supports reference images
     - Qwen 3 VL
     - Qwen 3.8 27B
     - Gemma 4
